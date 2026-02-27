@@ -1,0 +1,45 @@
+name: Feature request
+description: Propose an enhancement to RelayMesh
+title: "[Feature] "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please describe the problem first, then the proposed solution.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem statement
+      description: What limitation are you facing?
+      placeholder: As a user, I cannot...
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What should be added or changed?
+      placeholder: Add a command/endpoint/module that...
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Any workarounds or alternative approaches?
+    validations:
+      required: false
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope and impact
+      description: Runtime impact, compatibility, docs/tests needed.
+      placeholder: |
+        - Backward compatibility:
+        - Performance impact:
+        - Security impact:
+        - Test plan:
+    validations:
+      required: false

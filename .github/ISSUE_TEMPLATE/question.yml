@@ -1,0 +1,25 @@
+name: Usage question
+description: Ask a usage or integration question
+title: "[Question] "
+labels:
+  - question
+body:
+  - type: textarea
+    id: question
+    attributes:
+      label: Question
+      description: Describe what you are trying to do.
+      placeholder: I want to run ... but ...
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: Share command, config, and environment details.
+      placeholder: |
+        Command:
+        Config:
+        OS/Java:
+    validations:
+      required: true

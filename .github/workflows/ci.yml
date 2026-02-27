@@ -1,0 +1,120 @@
+﻿name: relaymesh-ci
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: maven
+
+      - name: Build
+        run: mvn -q -DskipTests package
+
+      - name: Unit Tests
+        run: mvn -q test
+
+  windows-smoke:
+    runs-on: windows-latest
+    needs: build-and-test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: maven
+
+      - name: Build
+        run: mvn -q -DskipTests package
+
+      - name: P8 Smoke
+        shell: powershell
+        run: powershell -ExecutionPolicy Bypass -File scripts/p8_smoke.ps1 -Root tmp/ci-p8-smoke -Port 18980
+
+      - name: V2 Mesh Smoke
+        shell: powershell
+        run: powershell -ExecutionPolicy Bypass -File scripts/v2_mesh_smoke.ps1 -Root tmp/ci-v2-smoke
+
+      - name: V2 Jitter Smoke
+        shell: powershell
+        run: powershell -ExecutionPolicy Bypass -File scripts/v2_jitter_smoke.ps1 -Root tmp/ci-v2-jitter-smoke
+
+      - name: V2 Prune Smoke
+        shell: powershell
+        run: powershell -ExecutionPolicy Bypass -File scripts/v2_prune_smoke.ps1 -Root tmp/ci-v2-prune-smoke
+
+      - name: V2 Mesh Summary Smoke
+        shell: powershell
+        run: powershell -ExecutionPolicy Bypass -File scripts/v2_mesh_summary_smoke.ps1 -Root tmp/ci-v2-mesh-summary-smoke
+
+      - name: V2 Worker Pause Smoke
+        shell: powershell
+        run: powershell -ExecutionPolicy Bypass -File scripts/v2_worker_pause_smoke.ps1 -Root tmp/ci-v2-worker-pause-smoke
+
+      - name: V2 Lease Epoch Smoke
+        shell: powershell
+        run: powershell -ExecutionPolicy Bypass -File scripts/v2_lease_epoch_smoke.ps1
+
+      - name: V2 Fairness Smoke
+        shell: powershell
+        run: powershell -ExecutionPolicy Bypass -File scripts/v2_fairness_smoke.ps1
+
+      - name: V2 Cluster State Smoke
+        shell: powershell
+        run: powershell -ExecutionPolicy Bypass -File scripts/v2_cluster_state_smoke.ps1 -Root tmp/ci-v2-cluster-state-smoke
+
+      - name: V2 Replication Envelope Smoke
+        shell: powershell
+        run: powershell -ExecutionPolicy Bypass -File scripts/v2_replication_envelope_smoke.ps1 -Root tmp/ci-v2-replication-envelope-smoke
+
+      - name: V2 Replication Sync Smoke
+        shell: powershell
+        run: powershell -ExecutionPolicy Bypass -File scripts/v2_replication_sync_smoke.ps1 -SourceRoot tmp/ci-v2-replication-sync-source -TargetRoot tmp/ci-v2-replication-sync-target
+
+      - name: V2 Partition Simulation Smoke
+        shell: powershell
+        run: powershell -ExecutionPolicy Bypass -File scripts/v2_partition_sim_smoke.ps1 -NodeARoot tmp/ci-v2-partition-node-a -NodeBRoot tmp/ci-v2-partition-node-b
+
+      - name: V2 Convergence Report Smoke
+        shell: powershell
+        run: powershell -ExecutionPolicy Bypass -File scripts/v2_convergence_report_smoke.ps1 -SourceRoot tmp/ci-v2-convergence-source -TargetRoot tmp/ci-v2-convergence-target
+
+      - name: V2 Gossip Signing Smoke
+        shell: powershell
+        run: powershell -ExecutionPolicy Bypass -File scripts/v2_gossip_signing_smoke.ps1
+
+      - name: V2 Node RPC TLS Smoke
+        shell: powershell
+        run: powershell -ExecutionPolicy Bypass -File scripts/v2_node_rpc_tls_smoke.ps1 -Root tmp/ci-v2-node-rpc-tls-smoke -Port 19443
+
+      - name: V2 Node RPC Rotation Smoke
+        shell: powershell
+        run: powershell -ExecutionPolicy Bypass -File scripts/v2_node_rpc_rotation_smoke.ps1 -Root tmp/ci-v2-node-rpc-rotation-smoke -Port 19453
+
+      - name: V2 Benchmark Phase A Smoke
+        shell: powershell
+        run: powershell -ExecutionPolicy Bypass -File scripts/v2_benchmark_phase_a.ps1 -Root tmp/ci-v2-benchmark-phase-a -Tasks 400 -InputSize 48 -MaxSeconds 120
+
+      - name: V2 Disk Pressure Smoke
+        shell: powershell
+        run: powershell -ExecutionPolicy Bypass -File scripts/v2_disk_pressure_smoke.ps1 -Root tmp/ci-v2-disk-pressure-smoke
+
+      - name: V2 Upgrade Rollback Smoke
+        shell: powershell
+        run: powershell -ExecutionPolicy Bypass -File scripts/v2_upgrade_rollback_phase_c.ps1 -Root tmp/ci-v2-upgrade-rollback-smoke
+

@@ -1,0 +1,6 @@
+# Replace with actual maintainers before enabling required reviews.
+* @your-github-username
+
+/.github/ @your-github-username
+/src/ @your-github-username
+/docs/ @your-github-username
