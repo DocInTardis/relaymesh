@@ -1,0 +1,233 @@
+﻿param(
+    [string]$Root = "tmp/p8-smoke",
+    [int]$Port = 18888
+)
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = "Stop"
+
+$ProjectRoot = Split-Path -Parent $PSScriptRoot
+Push-Location $ProjectRoot
+
+try {
+    function Invoke-RelayMesh {
+        param([string]$ArgsLine)
+        $execArg = "-Dexec.args=--root=$Root $ArgsLine"
+        $output = & mvn -q exec:java $execArg 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            throw "relaymesh command failed: $ArgsLine`n$($output -join "`n")"
+        }
+        return ($output -join "`n")
+    }
+
+    function Get-StatusCode {
+        param(
+            [string]$Uri,
+            [string]$Method = "GET",
+            [string]$Body = ""
+        )
+        try {
+            if ($Method.ToUpperInvariant() -eq "POST") {
+                $resp = Invoke-WebRequest -Uri $Uri -Method POST -ContentType "application/x-www-form-urlencoded" -Body $Body -TimeoutSec 8
+            } else {
+                $resp = Invoke-WebRequest -Uri $Uri -Method $Method -TimeoutSec 8
+            }
+            return [int]$resp.StatusCode
+        } catch {
+            $response = $_.Exception.Response
+            if ($null -ne $response -and $null -ne $response.StatusCode) {
+                try {
+                    return [int]$response.StatusCode.value__
+                } catch {
+                    return [int]$response.StatusCode
+                }
+            }
+            throw
+        }
+    }
+
+    function Wait-WebReady {
+        param(
+            [int]$ReadyPort,
+            [int]$TimeoutSec = 20
+        )
+        $deadline = (Get-Date).AddSeconds($TimeoutSec)
+        while ((Get-Date) -lt $deadline) {
+            try {
+                $code = Get-StatusCode -Uri "http://127.0.0.1:$ReadyPort/"
+                if ($code -eq 200) {
+                    return
+                }
+            } catch {
+                Start-Sleep -Milliseconds 250
+                continue
+            }
+            Start-Sleep -Milliseconds 250
+        }
+        throw "web server not ready on port $ReadyPort"
+    }
+
+    function Start-WebJob {
+        param(
+            [string]$ExecArgs,
+            [int]$ReadyPort
+        )
+        $job = Start-Job -ScriptBlock {
+            param($ProjectRootArg, $ExecArgsArg)
+            Set-Location $ProjectRootArg
+            & mvn -q exec:java "-Dexec.args=$ExecArgsArg"
+        } -ArgumentList $ProjectRoot, $ExecArgs
+        Wait-WebReady -ReadyPort $ReadyPort
+        return $job
+    }
+
+    function Stop-WebJob {
+        param(
+            $Job,
+            [string]$OutputLog,
+            [string]$ErrorLog
+        )
+        if ($null -eq $Job) {
+            return
+        }
+        try {
+            Stop-Job -Job $Job -Force -ErrorAction SilentlyContinue
+        } catch {
+            # Ignore cleanup failures in smoke script.
+        }
+        try {
+            $rows = Receive-Job -Job $Job -Keep -ErrorAction SilentlyContinue
+            if ($OutputLog -and $rows) {
+                $rows | Out-File -FilePath $OutputLog -Encoding utf8
+            }
+        } catch {
+            # Ignore cleanup failures in smoke script.
+        }
+        try {
+            if ($ErrorLog -and (Test-Path $Job.ChildJobs[0].Error.File)) {
+                Copy-Item $Job.ChildJobs[0].Error.File $ErrorLog -Force
+            }
+        } catch {
+            # Ignore cleanup failures in smoke script.
+        }
+        try {
+            Remove-Job -Job $Job -Force -ErrorAction SilentlyContinue
+        } catch {
+            # Ignore cleanup failures in smoke script.
+        }
+    }
+
+    $rootPath = Join-Path $ProjectRoot $Root
+    if (Test-Path $rootPath) {
+        Remove-Item -Recurse -Force $rootPath
+    }
+
+    & mvn -q -DskipTests package
+    if ($LASTEXITCODE -ne 0) {
+        throw "mvn package failed"
+    }
+
+    $null = Invoke-RelayMesh "init"
+
+    $settingsJson = @'
+{
+  "leaseTimeoutMs": 12000,
+  "suspectAfterMs": 24000,
+  "deadAfterMs": 48000,
+  "maxAttempts": 3,
+  "baseBackoffMs": 1000,
+  "maxBackoffMs": 12000,
+  "retryDispatchLimit": 16,
+  "gossipFanout": 2,
+  "gossipPacketTtl": 2,
+  "gossipSyncSampleSize": 16,
+  "gossipDedupWindowMs": 30000,
+  "gossipDedupMaxEntries": 2048
+}
+'@
+    Set-Content -Path (Join-Path $rootPath "relaymesh-settings.json") -Value $settingsJson -Encoding utf8
+
+    $reloadOut = Invoke-RelayMesh "reload-settings"
+    if ($reloadOut -notmatch '"changedFields"') {
+        throw "reload-settings output missing changedFields"
+    }
+
+    $metricsOut = Invoke-RelayMesh "metrics"
+    if ($metricsOut -notmatch "relaymesh_tasks_total") {
+        throw "metrics output missing relaymesh_tasks_total"
+    }
+    if ($metricsOut -notmatch "relaymesh_web_write_get_compat_total") {
+        throw "metrics output missing relaymesh_web_write_get_compat_total"
+    }
+
+    $roToken = "relay_ro_smoke"
+    $rwToken = "relay_rw_smoke"
+    $postPort = $Port
+    $compatPort = $Port + 1
+    $summary = [ordered]@{}
+
+    $server = $null
+    try {
+        $postOut = Join-Path $rootPath "web-post-only.out.log"
+        $postErr = Join-Path $rootPath "web-post-only.err.log"
+        $postExecArgs = "--root=$Root serve-web --port $postPort --ro-token $roToken --rw-token $rwToken"
+        $server = Start-WebJob -ExecArgs $postExecArgs -ReadyPort $postPort
+
+        $summary["post_only_read_no_token"] = Get-StatusCode -Uri "http://127.0.0.1:$postPort/api/tasks?limit=1"
+        $summary["post_only_read_ro_token"] = Get-StatusCode -Uri "http://127.0.0.1:$postPort/api/tasks?limit=1&token=$roToken"
+        $summary["post_only_write_get"] = Get-StatusCode -Uri "http://127.0.0.1:$postPort/api/replay-batch?status=DEAD_LETTER&limit=1&token=$rwToken"
+        $summary["post_only_write_post"] = Get-StatusCode -Uri "http://127.0.0.1:$postPort/api/replay-batch?token=$rwToken" -Method "POST" -Body "status=DEAD_LETTER&limit=1"
+
+        if ($summary["post_only_read_no_token"] -ne 401) { throw "expected 401 without token, got $($summary["post_only_read_no_token"])" }
+        if ($summary["post_only_read_ro_token"] -ne 200) { throw "expected 200 with ro token, got $($summary["post_only_read_ro_token"])" }
+        if ($summary["post_only_write_get"] -ne 405) { throw "expected 405 for GET write on post-only mode, got $($summary["post_only_write_get"])" }
+        if ($summary["post_only_write_post"] -ne 200) { throw "expected 200 for POST write, got $($summary["post_only_write_post"])" }
+    } finally {
+        Stop-WebJob -Job $server -OutputLog $postOut -ErrorLog $postErr
+    }
+
+    $server = $null
+    try {
+        $compatOut = Join-Path $rootPath "web-allow-get.out.log"
+        $compatErr = Join-Path $rootPath "web-allow-get.err.log"
+        $compatExecArgs = "--root=$Root serve-web --port $compatPort --ro-token $roToken --rw-token $rwToken --allow-get-writes"
+        $server = Start-WebJob -ExecArgs $compatExecArgs -ReadyPort $compatPort
+
+        $summary["allow_get_write_get"] = Get-StatusCode -Uri "http://127.0.0.1:$compatPort/api/replay-batch?status=DEAD_LETTER&limit=1&token=$rwToken"
+        if ($summary["allow_get_write_get"] -ne 200) {
+            throw "expected 200 for GET write with --allow-get-writes, got $($summary["allow_get_write_get"])"
+        }
+
+        $metricsResp = Invoke-WebRequest -Uri "http://127.0.0.1:$compatPort/api/metrics?token=$roToken" -Method GET -TimeoutSec 8
+        $metricsText = [string]$metricsResp.Content
+        if ($metricsText -notmatch "relaymesh_web_write_get_compat_total") {
+            throw "api/metrics missing relaymesh_web_write_get_compat_total"
+        }
+        $match = [regex]::Match($metricsText, "relaymesh_web_write_get_compat_total\s+([0-9]+(?:\.[0-9]+)?)")
+        if (-not $match.Success) {
+            throw "cannot parse relaymesh_web_write_get_compat_total"
+        }
+        $summary["allow_get_metric_value"] = [double]$match.Groups[1].Value
+        if ($summary["allow_get_metric_value"] -lt 1) {
+            throw "expected relaymesh_web_write_get_compat_total >= 1, got $($summary["allow_get_metric_value"])"
+        }
+    } finally {
+        Stop-WebJob -Job $server -OutputLog $compatOut -ErrorLog $compatErr
+    }
+
+    $gossipOut = Invoke-RelayMesh "gossip-sync --node-id smoke-a --bind-port 18961 --seeds 127.0.0.1:18962 --window-ms 400 --rounds 1 --interval-ms 100 --fanout 1 --ttl 1"
+    if ($gossipOut -notmatch '"roundsCompleted"\s*:\s*1') {
+        throw "gossip-sync output missing roundsCompleted=1"
+    }
+    $summary["gossip_sync_checked"] = 1
+
+    Write-Host "P8 smoke checks passed."
+    $summary | ConvertTo-Json
+    $global:LASTEXITCODE = 0
+} catch {
+    Write-Error $_
+    throw
+} finally {
+    Pop-Location
+}
+

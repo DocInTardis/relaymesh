@@ -1,0 +1,20 @@
+{
+  "steps": [
+    {
+      "id": "x",
+      "agent": "echo",
+      "input": "x",
+      "priority": "normal",
+      "dependsOn": []
+    },
+    {
+      "id": "y",
+      "agent": "echo",
+      "input": "y",
+      "priority": "normal",
+      "dependsOn": [
+        "x"
+      ]
+    }
+  ]
+}
