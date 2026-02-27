@@ -107,6 +107,7 @@ final class NodeRpcTlsTest {
         }
     }
 
+    @SuppressWarnings("deprecation")
     private static final class FakeX509Certificate extends X509Certificate {
         private final BigInteger serial;
         private final byte[] encoded;

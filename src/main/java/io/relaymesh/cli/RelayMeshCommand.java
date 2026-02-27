@@ -2177,10 +2177,10 @@ public final class RelayMeshCommand implements Runnable {
             JsonNode peersNode = node.path("peers");
             LinkedHashMap<String, ControllerPeerState> peers = new LinkedHashMap<>();
             if (peersNode.isObject()) {
-                peersNode.fields().forEachRemaining(entry -> {
-                    JsonNode value = entry.getValue();
+                peersNode.fieldNames().forEachRemaining(peerName -> {
+                    JsonNode value = peersNode.path(peerName);
                     peers.put(
-                            entry.getKey(),
+                            peerName,
                             new ControllerPeerState(
                                     value.path("pull_cursor_ms").asLong(0L),
                                     value.path("push_cursor_ms").asLong(0L),
@@ -2451,14 +2451,14 @@ public final class RelayMeshCommand implements Runnable {
             try {
                 JsonNode node = Jsons.mapper().readTree(body);
                 if (node != null && node.isObject()) {
-                    node.fields().forEachRemaining(entry -> {
-                        JsonNode value = entry.getValue();
+                    node.fieldNames().forEachRemaining(key -> {
+                        JsonNode value = node.path(key);
                         if (value == null || value.isNull()) {
-                            out.put(entry.getKey(), "");
+                            out.put(key, "");
                         } else if (value.isValueNode()) {
-                            out.put(entry.getKey(), value.asText());
+                            out.put(key, value.asText());
                         } else {
-                            out.put(entry.getKey(), value.toString());
+                            out.put(key, value.toString());
                         }
                     });
                 }

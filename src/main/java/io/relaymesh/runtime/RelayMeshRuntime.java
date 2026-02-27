@@ -1,5 +1,6 @@
 package io.relaymesh.runtime;
 
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -2444,7 +2445,10 @@ public final class RelayMeshRuntime {
                         continue;
                     }
                     JsonNode detailsNode = node.path("details");
-                    Map<String, Object> details = Jsons.mapper().convertValue(detailsNode, Map.class);
+                    Map<String, Object> details = Jsons.mapper().convertValue(
+                            detailsNode,
+                            new TypeReference<Map<String, Object>>() {}
+                    );
                     String nodeHint = "";
                     if ("ownership.conflict.decision".equals(action)) {
                         String winner = detailsNode.path("winner_owner").asText("");
@@ -3594,6 +3598,7 @@ public final class RelayMeshRuntime {
             return 0;
         }
         int merged = 0;
+        // Accept only plausible heartbeat timestamps to avoid poisoning local membership with stale/future data.
         long staleCutoff = nowMs - Math.max(10_000L, settings.deadAfterMs() * 2L);
         for (GossipNodeState node : nodes) {
             if (node == null || node.nodeId() == null || node.nodeId().isBlank()) {
@@ -4027,6 +4032,7 @@ public final class RelayMeshRuntime {
             }
             String payloadPath = row.payloadPath();
             if (payloadText != null) {
+                // Imported replicas may reference remote payload paths; materialize a local copy before apply.
                 Path localPayload = config.payloadDir().resolve("replica-" + row.stepId() + ".payload.json");
                 try {
                     Files.createDirectories(localPayload.getParent());

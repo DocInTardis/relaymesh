@@ -151,9 +151,8 @@ public final class PayloadCrypto {
             JsonNode keysNode = node.path("keys");
             LinkedHashMap<String, SecretKeySpec> keys = new LinkedHashMap<>();
             if (keysNode.isObject()) {
-                keysNode.fields().forEachRemaining(entry -> {
-                    String kid = entry.getKey();
-                    String rawBase64 = entry.getValue().asText("");
+                keysNode.fieldNames().forEachRemaining(kid -> {
+                    String rawBase64 = keysNode.path(kid).asText("");
                     if (kid == null || kid.isBlank() || rawBase64.isBlank()) {
                         return;
                     }
@@ -166,6 +165,7 @@ public final class PayloadCrypto {
                 persistKeyring(created);
                 return created;
             }
+            // Keep service availability when active key id is missing after partial/manual key edits.
             if (!keys.containsKey(active)) {
                 active = keys.keySet().iterator().next();
             }

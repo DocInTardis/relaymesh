@@ -7,7 +7,6 @@ import io.relaymesh.util.Jsons;
 
 import java.util.Iterator;
 import java.util.Locale;
-import java.util.Map;
 import java.util.Set;
 
 public final class SensitiveDataMasker {
@@ -25,11 +24,10 @@ public final class SensitiveDataMasker {
         }
         if (input.isObject()) {
             ObjectNode out = Jsons.mapper().createObjectNode();
-            Iterator<Map.Entry<String, JsonNode>> it = input.fields();
-            while (it.hasNext()) {
-                Map.Entry<String, JsonNode> entry = it.next();
-                String key = entry.getKey();
-                JsonNode value = entry.getValue();
+            Iterator<String> fieldNames = input.fieldNames();
+            while (fieldNames.hasNext()) {
+                String key = fieldNames.next();
+                JsonNode value = input.path(key);
                 if (isSensitiveKey(key)) {
                     out.put(key, MASK);
                 } else {
