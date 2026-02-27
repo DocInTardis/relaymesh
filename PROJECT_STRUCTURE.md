@@ -5,7 +5,8 @@ RelayMesh follows a standard single-module Maven layout:
 ```text
 relaymesh/
   .github/workflows/        # CI workflows
-  docs/                     # architecture and rollout docs
+  docs/                     # architecture docs, rollout plans, reading guides
+    guides/                 # focused reader/operator guides
   examples/                 # sample workflow inputs
   scripts/                  # smoke, benchmark, chaos scripts
   src/main/java/            # runtime implementation
@@ -23,3 +24,4 @@ relaymesh/
 - Do not commit runtime output directories.
 - Use `tmp/...` as default root in scripts and local runs.
 - Keep sample JSON under `examples/workflows/`.
+- Keep navigation docs up to date: `docs/README.md` and `docs/guides/READING_GUIDE.md`.
