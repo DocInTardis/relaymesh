@@ -15,7 +15,7 @@
         <maven.compiler.target>17</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <picocli.version>4.7.7</picocli.version>
-        <jackson.version>2.19.0</jackson.version>
+        <jackson.version>2.21.1</jackson.version>
         <sqlite.version>3.49.1.0</sqlite.version>
         <junit.version>5.12.2</junit.version>
     </properties>
