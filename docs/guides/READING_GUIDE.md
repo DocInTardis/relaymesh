@@ -9,6 +9,9 @@ This guide gives a practical reading order so you can build a mental model quick
 3. Run a quick baseline:
    - `mvn test`
    - `mvn -q exec:java -Dexec.args="init --root tmp/guide-root"`
+4. Start the web layer once and keep it running:
+   - `mvn -q exec:java "-Dexec.args=--root tmp/guide-root serve-web --port 18080"`
+   - open `http://127.0.0.1:18080/` and `http://127.0.0.1:18080/control-room`
 
 ## 2) Understand Command Surface (CLI First)
 
@@ -17,6 +20,7 @@ This guide gives a practical reading order so you can build a mental model quick
    - bootstrap and workload: `init`, `submit`, `submit-workflow`, `worker`, `task`, `tasks`
    - operations: `stats`, `metrics`, `maintenance`, `members`, `mesh-summary`
    - replication and recovery: `replication-*`, `mesh-recover`, `mesh-prune`
+   - web operator plane: `serve-web` routes (`/`, `/control-room`, `/api/*`)
 
 Reason: CLI methods are a thin map of capabilities exposed by `RelayMeshRuntime`.
 
@@ -32,7 +36,23 @@ Reason: CLI methods are a thin map of capabilities exposed by `RelayMeshRuntime`
    - file queue: `src/main/java/io/relaymesh/bus/FileBus.java`
    - agent execution: `src/main/java/io/relaymesh/agent/*`
 
-## 4) Security and Observability
+## 4) Read Control-Room Path (UI -> API -> Runtime)
+
+1. In `src/main/java/io/relaymesh/cli/RelayMeshCommand.java`, read `serve-web` first:
+   - route registration for `/control-room`
+   - route registration for `/api/namespaces`
+   - route registration for `/api/control-room/snapshot`
+2. Continue in the same file with helper methods:
+   - auth and principal checks (`authorize*`)
+   - namespace resolution/discovery helpers
+   - `controlRoomHtml()` frontend script and hotkeys
+3. Map each view type back to runtime calls:
+   - tasks/dead -> `runtime.tasks(...)`
+   - conflicts -> `runtime.leaseConflicts(...)`
+   - members -> `runtime.members()`
+   - stats -> `runtime.stats()`
+
+## 5) Security and Observability
 
 1. Security:
    - `src/main/java/io/relaymesh/security/PayloadCrypto.java`
@@ -43,7 +63,7 @@ Reason: CLI methods are a thin map of capabilities exposed by `RelayMeshRuntime`
    - `src/main/java/io/relaymesh/observability/PrometheusFormatter.java`
    - `src/main/java/io/relaymesh/observability/OtelTraceExporter.java`
 
-## 5) Validate Assumptions with Tests
+## 6) Validate Assumptions with Tests
 
 Read tests as executable specs in this order:
 
@@ -54,12 +74,12 @@ Read tests as executable specs in this order:
 5. `src/test/java/io/relaymesh/bus/FileBusFairnessTest.java`
 6. `src/test/java/io/relaymesh/security/NodeRpcTlsTest.java`
 
-## 6) Use Scripts for End-to-End Scenarios
+## 7) Use Scripts for End-to-End Scenarios
 
 - See `scripts/` for smoke, chaos, and benchmark scripts.
 - Start with `scripts/v2_mesh_smoke.ps1` and then `scripts/p8_smoke.ps1`.
 
-## 7) Suggested Deep Dives
+## 8) Suggested Deep Dives
 
 1. Lease epoch fencing and conflict resolution.
 2. Replication import/export and payload materialization.

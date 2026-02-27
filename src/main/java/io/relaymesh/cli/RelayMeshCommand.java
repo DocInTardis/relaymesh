@@ -1110,6 +1110,11 @@ public final class RelayMeshCommand implements Runnable {
         public Integer call() throws Exception {
             RelayMeshRuntime runtime = parent.runtime();
             runtime.init();
+            RelayMeshConfig baseConfig = RelayMeshConfig.fromRoot(parent.root, parent.namespace);
+            String defaultNamespace = baseConfig.namespace();
+            Path rootBaseDir = baseConfig.rootBaseDir();
+            ConcurrentMap<String, RelayMeshRuntime> namespaceRuntimeCache = new ConcurrentHashMap<>();
+            namespaceRuntimeCache.put(defaultNamespace, runtime);
             WebAuth auth = WebAuth.load(roToken, rwToken, roTokenNext, rwTokenNext, authFile, parent.namespace);
             WriteRateLimiter writeRateLimiter = new WriteRateLimiter(Math.max(0, writeRateLimitPerMin));
             HttpServer server = HttpServer.create(new InetSocketAddress(port), 0);
@@ -1120,6 +1125,82 @@ public final class RelayMeshCommand implements Runnable {
                 try (OutputStream os = exchange.getResponseBody()) {
                     os.write(body);
                 }
+            });
+            server.createContext("/control-room", exchange -> {
+                byte[] body = controlRoomHtml().getBytes(StandardCharsets.UTF_8);
+                exchange.getResponseHeaders().set("Content-Type", "text/html; charset=utf-8");
+                exchange.sendResponseHeaders(200, body.length);
+                try (OutputStream os = exchange.getResponseBody()) {
+                    os.write(body);
+                }
+            });
+            server.createContext("/api/namespaces", exchange -> {
+                Map<String, String> q = parseParams(exchange);
+                AuthPrincipal principal = authorizePrincipal(exchange, q, auth, false);
+                if (principal == null) return;
+                List<String> discovered = discoverNamespaces(rootBaseDir, defaultNamespace);
+                List<String> visible = filterVisibleNamespaces(discovered, principal);
+                writeJson(exchange, Map.of(
+                        "activeNamespace", defaultNamespace,
+                        "namespaces", visible,
+                        "timestamp", Instant.now().toString()
+                ), 200);
+            });
+            server.createContext("/api/control-room/snapshot", exchange -> {
+                Map<String, String> q = parseParams(exchange);
+                AuthPrincipal principal = authorizePrincipal(exchange, q, auth, false);
+                if (principal == null) return;
+                int snapshotTaskLimit = clamp(parseIntOrDefault(q.get("taskLimit"), taskLimit), 1, 200);
+                int snapshotDeadLimit = clamp(parseIntOrDefault(q.get("deadLimit"), deadLimit), 1, 200);
+                int snapshotConflictLimit = clamp(parseIntOrDefault(q.get("conflictLimit"), 20), 1, 200);
+                int snapshotSinceHours = clamp(parseIntOrDefault(q.get("sinceHours"), 24), 1, 24 * 30);
+                String statusFilter = q.get("status");
+                List<String> discovered = discoverNamespaces(rootBaseDir, defaultNamespace);
+                List<String> requested = resolveRequestedNamespaces(
+                        q.get("namespaces"),
+                        q.get("ns"),
+                        defaultNamespace,
+                        discovered
+                );
+                if (requested.isEmpty()) {
+                    requested = List.of(defaultNamespace);
+                }
+                for (String requestedNamespace : requested) {
+                    if (!discovered.contains(requestedNamespace)) {
+                        writeJson(
+                                exchange,
+                                Map.of("error", "namespace_not_found", "namespace", requestedNamespace),
+                                404
+                        );
+                        return;
+                    }
+                    if (!principalCanAccessNamespace(principal, requestedNamespace)) {
+                        writeJson(
+                                exchange,
+                                Map.of("error", "forbidden_namespace", "namespace", requestedNamespace),
+                                403
+                        );
+                        return;
+                    }
+                }
+                LinkedHashMap<String, Object> data = new LinkedHashMap<>();
+                for (String ns : requested) {
+                    RelayMeshRuntime scoped = runtimeForNamespace(parent.root, ns, namespaceRuntimeCache);
+                    LinkedHashMap<String, Object> snap = new LinkedHashMap<>();
+                    snap.put("stats", scoped.stats());
+                    snap.put("members", scoped.members());
+                    snap.put("tasks", scoped.tasks(statusFilter, snapshotTaskLimit, 0));
+                    snap.put("dead", scoped.tasks("DEAD_LETTER", snapshotDeadLimit, 0));
+                    snap.put("conflicts", scoped.leaseConflicts(snapshotConflictLimit, snapshotSinceHours));
+                    data.put(ns, snap);
+                }
+                LinkedHashMap<String, Object> payload = new LinkedHashMap<>();
+                payload.put("timestamp", Instant.now().toString());
+                payload.put("activeNamespace", defaultNamespace);
+                payload.put("requestedNamespaces", requested);
+                payload.put("statusFilter", statusFilter == null ? "" : statusFilter);
+                payload.put("data", data);
+                writeJson(exchange, payload, 200);
             });
             server.createContext("/api/tasks", exchange -> {
                 Map<String, String> q = parseParams(exchange);
@@ -2282,39 +2363,49 @@ public final class RelayMeshCommand implements Runnable {
             WebAuth auth,
             boolean writeRequired
     ) throws IOException {
+        AuthPrincipal principal = authorizePrincipal(exchange, query, auth, writeRequired);
+        return principal != null;
+    }
+
+    private static AuthPrincipal authorizePrincipal(
+            com.sun.net.httpserver.HttpExchange exchange,
+            Map<String, String> query,
+            WebAuth auth,
+            boolean writeRequired
+    ) throws IOException {
         if (!auth.enabled()) {
             AuthPrincipal bypass = AuthPrincipal.bypass(auth.namespace());
             applyPrincipal(exchange, bypass);
-            return true;
+            return bypass;
         }
         String token = extractToken(exchange, query);
         if (token == null || token.isBlank()) {
             writeJson(exchange, Map.of("error", "missing_token"), 401);
-            return false;
+            return null;
         }
         AuthPrincipal principal = auth.resolve(token);
         if (principal == null) {
             writeJson(exchange, Map.of("error", "forbidden_token"), 403);
-            return false;
+            return null;
         }
         if (!auth.namespaceAllowed(principal)) {
             writeJson(exchange, Map.of("error", "forbidden_namespace", "namespace", auth.namespace()), 403);
-            return false;
+            return null;
         }
         if (writeRequired) {
             if (!auth.canWrite(principal)) {
                 writeJson(exchange, Map.of("error", "forbidden_write"), 403);
-                return false;
+                return null;
             }
             applyPrincipal(exchange, principal);
-            return true;
+            return principal;
         }
         if (!auth.canRead(principal)) {
             writeJson(exchange, Map.of("error", "forbidden_read"), 403);
-            return false;
+            return null;
         }
         applyPrincipal(exchange, principal);
-        return true;
+        return principal;
     }
 
     private static void applyPrincipal(com.sun.net.httpserver.HttpExchange exchange, AuthPrincipal principal) {
@@ -2482,6 +2573,140 @@ public final class RelayMeshCommand implements Runnable {
         }
     }
 
+    private static int clamp(int value, int min, int max) {
+        if (value < min) {
+            return min;
+        }
+        if (value > max) {
+            return max;
+        }
+        return value;
+    }
+
+    private static RelayMeshRuntime runtimeForNamespace(
+            String root,
+            String namespace,
+            ConcurrentMap<String, RelayMeshRuntime> cache
+    ) {
+        String normalized = normalizeNamespace(namespace, RelayMeshConfig.DEFAULT_NAMESPACE);
+        return cache.computeIfAbsent(normalized, ns -> {
+            RelayMeshRuntime scoped = new RelayMeshRuntime(RelayMeshConfig.fromRoot(root, ns));
+            scoped.init();
+            return scoped;
+        });
+    }
+
+    private static List<String> discoverNamespaces(Path rootBaseDir, String activeNamespace) {
+        LinkedHashSet<String> out = new LinkedHashSet<>();
+        String normalizedActive = normalizeNamespace(activeNamespace, RelayMeshConfig.DEFAULT_NAMESPACE);
+        if (Files.exists(rootBaseDir.resolve("relaymesh.db"))) {
+            out.add(RelayMeshConfig.DEFAULT_NAMESPACE);
+        }
+        Path namespacesRoot = rootBaseDir.resolve(RelayMeshConfig.DEFAULT_NAMESPACES_DIR);
+        if (Files.isDirectory(namespacesRoot)) {
+            try (var children = Files.newDirectoryStream(namespacesRoot)) {
+                for (Path child : children) {
+                    if (!Files.isDirectory(child)) {
+                        continue;
+                    }
+                    if (!Files.exists(child.resolve("relaymesh.db"))) {
+                        continue;
+                    }
+                    out.add(normalizeNamespace(child.getFileName().toString(), normalizedActive));
+                }
+            } catch (IOException ignored) {
+                // Keep best-effort discovery for control-room.
+            }
+        }
+        out.add(normalizedActive);
+        List<String> namespaces = new ArrayList<>(out);
+        namespaces.sort(String::compareTo);
+        if (namespaces.remove(normalizedActive)) {
+            namespaces.add(0, normalizedActive);
+        }
+        return namespaces;
+    }
+
+    private static List<String> resolveRequestedNamespaces(
+            String rawNamespaces,
+            String singleNamespace,
+            String activeNamespace,
+            List<String> discovered
+    ) {
+        String value = rawNamespaces == null || rawNamespaces.isBlank() ? singleNamespace : rawNamespaces;
+        if (value == null || value.isBlank()) {
+            return List.of(normalizeNamespace(activeNamespace, RelayMeshConfig.DEFAULT_NAMESPACE));
+        }
+        LinkedHashSet<String> out = new LinkedHashSet<>();
+        for (String token : parseNamespaceList(value)) {
+            if ("all".equalsIgnoreCase(token)) {
+                if (discovered != null) {
+                    for (String ns : discovered) {
+                        out.add(normalizeNamespace(ns, activeNamespace));
+                    }
+                }
+                continue;
+            }
+            out.add(normalizeNamespace(token, activeNamespace));
+        }
+        if (out.isEmpty()) {
+            out.add(normalizeNamespace(activeNamespace, RelayMeshConfig.DEFAULT_NAMESPACE));
+        }
+        return new ArrayList<>(out);
+    }
+
+    private static List<String> parseNamespaceList(String raw) {
+        List<String> out = new ArrayList<>();
+        if (raw == null || raw.isBlank()) {
+            return out;
+        }
+        for (String token : raw.split(",")) {
+            if (token == null) {
+                continue;
+            }
+            String trimmed = token.trim();
+            if (!trimmed.isEmpty()) {
+                out.add(trimmed);
+            }
+        }
+        return out;
+    }
+
+    private static String normalizeNamespace(String raw, String fallback) {
+        String candidate = raw == null || raw.isBlank() ? fallback : raw.trim();
+        if (candidate == null || candidate.isBlank()) {
+            candidate = RelayMeshConfig.DEFAULT_NAMESPACE;
+        }
+        return RelayMeshConfig.fromRoot("data", candidate).namespace();
+    }
+
+    private static List<String> filterVisibleNamespaces(List<String> discovered, AuthPrincipal principal) {
+        if (principal == null) {
+            return List.of();
+        }
+        if (principal.allowedNamespaces() == null || principal.allowedNamespaces().isEmpty()) {
+            return discovered;
+        }
+        List<String> out = new ArrayList<>();
+        for (String namespace : discovered) {
+            if (principal.allowedNamespaces().contains(namespace)) {
+                out.add(namespace);
+            }
+        }
+        return out;
+    }
+
+    private static boolean principalCanAccessNamespace(AuthPrincipal principal, String namespace) {
+        if (principal == null) {
+            return false;
+        }
+        if (principal.allowedNamespaces() == null || principal.allowedNamespaces().isEmpty()) {
+            return true;
+        }
+        String normalized = normalizeNamespace(namespace, principal.namespace());
+        return principal.allowedNamespaces().contains(normalized);
+    }
+
     private static List<String> resolveSeedEndpoints(List<String> cliSeeds, String seedsFile) {
         Set<String> unique = new LinkedHashSet<>();
         if (cliSeeds != null) {
@@ -2618,7 +2843,7 @@ public final class RelayMeshCommand implements Runnable {
                   <div class="wrap">
                     <div class="hero">
                       <h1>RelayMesh Console</h1>
-                      <p>tasks, workflow graph, dead letters, metrics, membership</p>
+                      <p>tasks, workflow graph, dead letters, metrics, membership, and control-room mode</p>
                     </div>
                     <div id="sseStatus" class="mono" style="margin-bottom:10px;color:#0369a1;">SSE: connecting...</div>
                     <div class="grid">
@@ -2633,6 +2858,7 @@ public final class RelayMeshCommand implements Runnable {
                           <button onclick="cancelTask('hard')">Hard Cancel</button>
                           <button onclick="replayTask()">Replay Task</button>
                           <button onclick="refreshAll()">Refresh</button>
+                          <button onclick="window.location.href='/control-room'">Control Room</button>
                         </div>
                         <div id="actionResult" class="mono" style="margin-bottom:8px;color:#0f766e;"></div>
                         <table id="taskTable"><thead><tr><th>Task</th><th>Status</th><th>Updated(ms)</th></tr></thead><tbody></tbody></table>
@@ -2818,6 +3044,491 @@ public final class RelayMeshCommand implements Runnable {
                     connectEvents();
                     refreshAll();
                     setInterval(refreshAll, 8000);
+                  </script>
+                </body>
+                </html>
+                """;
+    }
+
+    private static String controlRoomHtml() {
+        return """
+                <!doctype html>
+                <html lang="en">
+                <head>
+                  <meta charset="utf-8">
+                  <meta name="viewport" content="width=device-width, initial-scale=1">
+                  <title>RelayMesh Control Room</title>
+                  <style>
+                    :root {
+                      --bg: radial-gradient(circle at 10% 10%, #f8fafc 0%, #e2e8f0 45%, #cbd5e1 100%);
+                      --ink: #0f172a;
+                      --muted: #475569;
+                      --line: #94a3b8;
+                      --panel: rgba(248, 250, 252, 0.95);
+                      --accent: #0f766e;
+                      --accent2: #0369a1;
+                      --active: #fef3c7;
+                      --active-line: #f59e0b;
+                    }
+                    * { box-sizing: border-box; }
+                    body {
+                      margin: 0;
+                      color: var(--ink);
+                      font-family: "Space Grotesk", "Segoe UI", sans-serif;
+                      background: var(--bg);
+                    }
+                    .wrap {
+                      max-width: 1480px;
+                      margin: 16px auto 20px;
+                      padding: 0 14px;
+                    }
+                    .topbar {
+                      background: var(--panel);
+                      border: 1px solid var(--line);
+                      border-radius: 14px;
+                      padding: 12px;
+                      box-shadow: 0 8px 20px rgba(2, 6, 23, 0.08);
+                      margin-bottom: 12px;
+                    }
+                    .title {
+                      display: flex;
+                      flex-wrap: wrap;
+                      gap: 10px;
+                      align-items: baseline;
+                      margin-bottom: 10px;
+                    }
+                    .title h1 {
+                      margin: 0;
+                      font-size: 28px;
+                      letter-spacing: 0.3px;
+                    }
+                    .title p {
+                      margin: 0;
+                      color: var(--muted);
+                    }
+                    .controls {
+                      display: grid;
+                      grid-template-columns: repeat(6, minmax(0, 1fr));
+                      gap: 8px;
+                    }
+                    .hint {
+                      margin-top: 8px;
+                      color: var(--muted);
+                      font-size: 12px;
+                    }
+                    input, select, button {
+                      width: 100%;
+                      border: 1px solid var(--line);
+                      border-radius: 10px;
+                      padding: 7px 9px;
+                      font: inherit;
+                      color: var(--ink);
+                      background: #fff;
+                    }
+                    button {
+                      background: var(--accent);
+                      border-color: var(--accent);
+                      color: #fff;
+                      cursor: pointer;
+                    }
+                    .secondary {
+                      background: #0f172a;
+                      border-color: #0f172a;
+                    }
+                    .status {
+                      margin-top: 8px;
+                      font-family: "IBM Plex Mono", "JetBrains Mono", Consolas, monospace;
+                      font-size: 12px;
+                      color: var(--accent2);
+                    }
+                    .grid {
+                      display: grid;
+                      grid-template-columns: repeat(2, minmax(0, 1fr));
+                      gap: 10px;
+                    }
+                    .pane {
+                      background: var(--panel);
+                      border: 1px solid var(--line);
+                      border-radius: 14px;
+                      padding: 10px;
+                      min-height: 260px;
+                      box-shadow: 0 8px 22px rgba(2, 6, 23, 0.08);
+                    }
+                    .pane.active {
+                      border-color: var(--active-line);
+                      background: var(--active);
+                      box-shadow: 0 12px 28px rgba(245, 158, 11, 0.25);
+                    }
+                    .pane-head {
+                      display: grid;
+                      grid-template-columns: 120px 1fr 1fr 90px 1fr;
+                      gap: 6px;
+                      align-items: center;
+                      margin-bottom: 8px;
+                    }
+                    .pane-title {
+                      font-size: 14px;
+                      font-weight: 700;
+                    }
+                    .mono {
+                      font-family: "IBM Plex Mono", "JetBrains Mono", Consolas, monospace;
+                      font-size: 12px;
+                    }
+                    .pane-body {
+                      border: 1px solid #cbd5e1;
+                      border-radius: 10px;
+                      background: #f8fafc;
+                      min-height: 192px;
+                      max-height: 380px;
+                      overflow: auto;
+                      padding: 8px;
+                      white-space: pre;
+                    }
+                    @media (max-width: 1200px) {
+                      .controls {
+                        grid-template-columns: repeat(3, minmax(0, 1fr));
+                      }
+                      .pane-head {
+                        grid-template-columns: 120px 1fr 1fr;
+                      }
+                    }
+                    @media (max-width: 860px) {
+                      .grid {
+                        grid-template-columns: 1fr;
+                      }
+                      .controls {
+                        grid-template-columns: 1fr;
+                      }
+                    }
+                  </style>
+                </head>
+                <body>
+                  <div class="wrap">
+                    <div class="topbar">
+                      <div class="title">
+                        <h1>RelayMesh Control Room</h1>
+                        <p>multi-screen operator view with shared snapshots</p>
+                      </div>
+                      <div class="controls">
+                        <input id="tokenInput" placeholder="token (optional)">
+                        <input id="namespacesInput" placeholder="namespaces: all or default,project-a">
+                        <input id="statusFilterInput" placeholder="task status filter (optional)">
+                        <input id="refreshSecInput" type="number" min="1" max="60" value="5" placeholder="refresh sec">
+                        <button onclick="manualRefresh()">Refresh Now</button>
+                        <button class="secondary" onclick="window.location.href='/'">Open Classic Console</button>
+                      </div>
+                      <div class="hint">
+                        Hotkeys: Alt+1..9 focus panel, Tab/Shift+Tab cycle, Ctrl+R refresh. Shared snapshot feeds every panel.
+                      </div>
+                      <div id="statusLine" class="status mono">booting...</div>
+                    </div>
+                    <section id="paneGrid" class="grid"></section>
+                  </div>
+                  <script>
+                    const state = {
+                      namespaces: [],
+                      snapshot: null,
+                      activePane: 0,
+                      timer: null,
+                      panes: [
+                        { index: 1, namespace: 'default', view: 'tasks', limit: 12, status: '' },
+                        { index: 2, namespace: 'default', view: 'dead', limit: 12, status: '' },
+                        { index: 3, namespace: 'default', view: 'conflicts', limit: 20, status: '' },
+                        { index: 4, namespace: 'default', view: 'stats', limit: 1, status: '' }
+                      ]
+                    };
+
+                    function authToken() {
+                      return document.getElementById('tokenInput').value.trim();
+                    }
+
+                    function withAuth(url) {
+                      const token = authToken();
+                      if (!token) return url;
+                      const sep = url.includes('?') ? '&' : '?';
+                      return url + sep + 'token=' + encodeURIComponent(token);
+                    }
+
+                    async function fetchJson(url) {
+                      const r = await fetch(withAuth(url));
+                      if (!r.ok) {
+                        throw new Error(await r.text());
+                      }
+                      return r.json();
+                    }
+
+                    function paneNamespaceOptions(selected) {
+                      const values = state.namespaces.length > 0 ? state.namespaces : ['default'];
+                      return values.map(ns => {
+                        const sel = ns === selected ? 'selected' : '';
+                        return `<option value="${ns}" ${sel}>${ns}</option>`;
+                      }).join('');
+                    }
+
+                    function paneViewOptions(selected) {
+                      const views = ['tasks', 'dead', 'conflicts', 'members', 'stats'];
+                      return views.map(v => {
+                        const sel = v === selected ? 'selected' : '';
+                        return `<option value="${v}" ${sel}>${v}</option>`;
+                      }).join('');
+                    }
+
+                    function renderPaneShells() {
+                      const grid = document.getElementById('paneGrid');
+                      grid.innerHTML = '';
+                      for (const cfg of state.panes) {
+                        const pane = document.createElement('article');
+                        pane.className = 'pane';
+                        pane.dataset.index = String(cfg.index - 1);
+                        pane.innerHTML = `
+                          <div class="pane-head">
+                            <div class="pane-title">Pane ${cfg.index}</div>
+                            <select class="nsSelect">${paneNamespaceOptions(cfg.namespace)}</select>
+                            <select class="viewSelect">${paneViewOptions(cfg.view)}</select>
+                            <input class="limitInput" type="number" min="1" max="200" value="${cfg.limit}">
+                            <input class="statusInput" placeholder="status filter (tasks only)" value="${cfg.status}">
+                          </div>
+                          <div class="pane-body mono" id="paneBody${cfg.index}">loading...</div>
+                        `;
+                        grid.appendChild(pane);
+                      }
+                      bindPaneControls();
+                      focusPane(state.activePane);
+                    }
+
+                    function bindPaneControls() {
+                      const panes = document.querySelectorAll('.pane');
+                      panes.forEach((pane, idx) => {
+                        pane.addEventListener('click', () => focusPane(idx));
+                        const nsSel = pane.querySelector('.nsSelect');
+                        const viewSel = pane.querySelector('.viewSelect');
+                        const limitInput = pane.querySelector('.limitInput');
+                        const statusInput = pane.querySelector('.statusInput');
+                        nsSel.addEventListener('change', () => {
+                          state.panes[idx].namespace = nsSel.value;
+                          renderPaneData(idx);
+                        });
+                        viewSel.addEventListener('change', () => {
+                          state.panes[idx].view = viewSel.value;
+                          renderPaneData(idx);
+                        });
+                        limitInput.addEventListener('change', () => {
+                          const next = Number.parseInt(limitInput.value, 10);
+                          state.panes[idx].limit = Number.isFinite(next) ? Math.max(1, Math.min(200, next)) : 20;
+                          limitInput.value = String(state.panes[idx].limit);
+                          renderPaneData(idx);
+                        });
+                        statusInput.addEventListener('change', () => {
+                          state.panes[idx].status = statusInput.value.trim();
+                          renderPaneData(idx);
+                        });
+                      });
+                    }
+
+                    function focusPane(index) {
+                      const panes = document.querySelectorAll('.pane');
+                      if (panes.length === 0) return;
+                      const normalized = (index + panes.length) % panes.length;
+                      state.activePane = normalized;
+                      panes.forEach((pane, idx) => {
+                        if (idx === normalized) pane.classList.add('active');
+                        else pane.classList.remove('active');
+                      });
+                    }
+
+                    function selectedNamespacesQuery() {
+                      const raw = document.getElementById('namespacesInput').value.trim();
+                      if (!raw) return 'all';
+                      return raw;
+                    }
+
+                    function globalStatusFilter() {
+                      return document.getElementById('statusFilterInput').value.trim();
+                    }
+
+                    function maxPaneLimit(view) {
+                      let max = 20;
+                      for (const pane of state.panes) {
+                        if (view === 'task' && pane.view === 'tasks') {
+                          max = Math.max(max, pane.limit || 20);
+                        }
+                        if (view === 'dead' && pane.view === 'dead') {
+                          max = Math.max(max, pane.limit || 20);
+                        }
+                        if (view === 'conflicts' && pane.view === 'conflicts') {
+                          max = Math.max(max, pane.limit || 20);
+                        }
+                      }
+                      return Math.max(1, Math.min(200, max));
+                    }
+
+                    async function loadNamespaces() {
+                      const body = await fetchJson('/api/namespaces');
+                      state.namespaces = body.namespaces || [];
+                      const active = body.activeNamespace || 'default';
+                      if (!state.namespaces.includes(active)) {
+                        state.namespaces.unshift(active);
+                      }
+                      if (!document.getElementById('namespacesInput').value.trim()) {
+                        document.getElementById('namespacesInput').value = state.namespaces.join(',');
+                      }
+                      for (const pane of state.panes) {
+                        if (!state.namespaces.includes(pane.namespace)) {
+                          pane.namespace = active;
+                        }
+                      }
+                      renderPaneShells();
+                    }
+
+                    function setStatusLine(msg) {
+                      document.getElementById('statusLine').textContent = msg;
+                    }
+
+                    async function loadSnapshot() {
+                      const qp = new URLSearchParams();
+                      qp.set('namespaces', selectedNamespacesQuery());
+                      qp.set('taskLimit', String(maxPaneLimit('task')));
+                      qp.set('deadLimit', String(maxPaneLimit('dead')));
+                      qp.set('conflictLimit', String(maxPaneLimit('conflicts')));
+                      const status = globalStatusFilter();
+                      if (status) qp.set('status', status);
+                      const body = await fetchJson('/api/control-room/snapshot?' + qp.toString());
+                      state.snapshot = body;
+                      renderAllPaneData();
+                      setStatusLine('snapshot ok @ ' + (body.timestamp || new Date().toISOString()) + ' namespaces=' + (body.requestedNamespaces || []).join(','));
+                    }
+
+                    function safeArray(value) {
+                      return Array.isArray(value) ? value : [];
+                    }
+
+                    function truncateLines(lines, limit) {
+                      if (lines.length <= limit) return lines;
+                      const copy = lines.slice(0, limit);
+                      copy.push('... (' + (lines.length - limit) + ' more)');
+                      return copy;
+                    }
+
+                    function renderPaneData(index) {
+                      const cfg = state.panes[index];
+                      const body = document.getElementById('paneBody' + cfg.index);
+                      if (!body) return;
+                      if (!state.snapshot || !state.snapshot.data) {
+                        body.textContent = 'waiting for snapshot...';
+                        return;
+                      }
+                      const ns = cfg.namespace;
+                      const slot = state.snapshot.data[ns];
+                      if (!slot) {
+                        body.textContent = 'namespace not found in snapshot: ' + ns;
+                        return;
+                      }
+                      const view = cfg.view;
+                      if (view === 'tasks') {
+                        let rows = safeArray(slot.tasks);
+                        const localStatus = cfg.status || globalStatusFilter();
+                        if (localStatus) {
+                          rows = rows.filter(t => String(t.status || '').toUpperCase() === localStatus.toUpperCase());
+                        }
+                        const lines = rows.map(t => `${t.taskId} | ${t.status} | ${t.updatedAtMs}`);
+                        body.textContent = truncateLines(lines, cfg.limit).join('\\n') || '(empty tasks)';
+                        return;
+                      }
+                      if (view === 'dead') {
+                        const rows = safeArray(slot.dead);
+                        const lines = rows.map(t => `${t.taskId} | ${t.status} | ${t.lastError || ''}`);
+                        body.textContent = truncateLines(lines, cfg.limit).join('\\n') || '(empty dead)';
+                        return;
+                      }
+                      if (view === 'conflicts') {
+                        const rows = safeArray(slot.conflicts);
+                        const lines = rows.map(c => `${c.type || 'conflict'} | step=${c.stepId || ''} | task=${c.taskId || ''} | at=${c.occurredAtMs || ''}`);
+                        body.textContent = truncateLines(lines, cfg.limit).join('\\n') || '(empty conflicts)';
+                        return;
+                      }
+                      if (view === 'members') {
+                        body.textContent = JSON.stringify(slot.members || {}, null, 2);
+                        return;
+                      }
+                      body.textContent = JSON.stringify(slot.stats || {}, null, 2);
+                    }
+
+                    function renderAllPaneData() {
+                      for (let i = 0; i < state.panes.length; i++) {
+                        renderPaneData(i);
+                      }
+                    }
+
+                    function manualRefresh() {
+                      loadSnapshot().catch(err => {
+                        setStatusLine('snapshot failed: ' + err.message);
+                      });
+                    }
+
+                    function rearmAutoRefresh() {
+                      if (state.timer) clearInterval(state.timer);
+                      const secRaw = Number.parseInt(document.getElementById('refreshSecInput').value, 10);
+                      const sec = Number.isFinite(secRaw) ? Math.max(1, Math.min(60, secRaw)) : 5;
+                      document.getElementById('refreshSecInput').value = String(sec);
+                      state.timer = setInterval(() => {
+                        loadSnapshot().catch(err => {
+                          setStatusLine('snapshot failed: ' + err.message);
+                        });
+                      }, sec * 1000);
+                    }
+
+                    function bindGlobalKeys() {
+                      document.addEventListener('keydown', ev => {
+                        if (ev.altKey && !ev.ctrlKey && !ev.shiftKey) {
+                          const num = Number.parseInt(ev.key, 10);
+                          if (Number.isFinite(num) && num >= 1 && num <= state.panes.length) {
+                            ev.preventDefault();
+                            focusPane(num - 1);
+                            return;
+                          }
+                        }
+                        if (ev.key === 'Tab') {
+                          ev.preventDefault();
+                          const direction = ev.shiftKey ? -1 : 1;
+                          focusPane(state.activePane + direction);
+                          return;
+                        }
+                        if (ev.ctrlKey && (ev.key === 'r' || ev.key === 'R')) {
+                          ev.preventDefault();
+                          manualRefresh();
+                        }
+                      });
+                    }
+
+                    function initFromQuery() {
+                      const qp = new URLSearchParams(window.location.search);
+                      const token = qp.get('token') || '';
+                      if (token) {
+                        document.getElementById('tokenInput').value = token;
+                      }
+                      const namespaces = qp.get('namespaces') || '';
+                      if (namespaces) {
+                        document.getElementById('namespacesInput').value = namespaces;
+                      }
+                    }
+
+                    async function bootstrap() {
+                      initFromQuery();
+                      bindGlobalKeys();
+                      document.getElementById('refreshSecInput').addEventListener('change', rearmAutoRefresh);
+                      document.getElementById('tokenInput').addEventListener('change', () => {
+                        loadNamespaces()
+                          .then(loadSnapshot)
+                          .catch(err => setStatusLine('reload failed: ' + err.message));
+                      });
+                      await loadNamespaces();
+                      await loadSnapshot();
+                      rearmAutoRefresh();
+                    }
+
+                    bootstrap().catch(err => {
+                      setStatusLine('bootstrap failed: ' + err.message);
+                    });
                   </script>
                 </body>
                 </html>

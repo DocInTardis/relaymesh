@@ -12,6 +12,7 @@ RelayMesh 是一个可本地运行的多 Agent 任务编排与执行系统，核
 - Worker 并行消费任务队列
 - 多项目隔离（通过 `namespace`）
 - Web 控制台与指标暴露（Prometheus）
+- Control Room 多窗口联动视图（共享快照 + 快捷键切屏）
 - 失败重试、死信、回放
 - Mesh 成员状态、复制与恢复能力
 
@@ -20,6 +21,7 @@ RelayMesh 是一个可本地运行的多 Agent 任务编排与执行系统，核
 - 一键启动后，在同一个终端里统一调度
 - 随时拉起多个 agent/worker
 - 多个项目并行处理，或同一个项目内并行处理
+- 在浏览器里像“监控室”一样观察多个窗口，并用快捷键切换焦点
 
 ## 2. 环境准备
 
@@ -194,9 +196,31 @@ mvn -q exec:java "-Dexec.args=--root tmp/manual-root --namespace project-a tasks
 mvn -q exec:java "-Dexec.args=--root tmp/manual-root serve-web --port 18080 --ro-token relay_ro --rw-token relay_rw"
 ```
 
-访问：`http://127.0.0.1:18080/?token=relay_ro`
+经典控制台：`http://127.0.0.1:18080/?token=relay_ro`
 
-## 7.2 启动 Metrics
+## 7.2 Control Room（多屏控制室）
+
+入口：`http://127.0.0.1:18080/control-room?token=relay_ro`
+
+Control Room 默认提供 4 个面板，并且由同一次后端快照统一驱动。你可以：
+
+- 给每个面板独立选择 `namespace`
+- 切换视图类型：`tasks` / `dead` / `conflicts` / `members` / `stats`
+- 对任务面板设置 `status` 与 `limit`
+- 修改自动刷新间隔（1-60 秒）
+
+快捷键：
+
+- `Alt+1..9`：聚焦指定面板
+- `Tab` / `Shift+Tab`：按顺序切换面板焦点
+- `Ctrl+R`：立即刷新快照
+
+相关 API（调试时可直接调用）：
+
+- `GET /api/namespaces`
+- `GET /api/control-room/snapshot?namespaces=all&taskLimit=30&deadLimit=30&conflictLimit=20`
+
+## 7.3 启动 Metrics
 
 ```powershell
 mvn -q exec:java "-Dexec.args=--root tmp/manual-root serve-metrics --port 19090"
@@ -322,3 +346,4 @@ session show
 - `workspace launch` 会打开新的 Windows Terminal，会话参数从保存的 profile 读取。
 - `session` 会持久化 root/namespace/topology/alias/template，便于下次恢复。
 - `session clear` 可清掉自动恢复状态，重新从干净会话启动。
+- 建议把 Hub 作为“操作终端”，把 `/control-room` 作为“监控终端”并排使用。

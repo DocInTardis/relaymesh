@@ -12,6 +12,7 @@
 - workspace profiles that open new terminal sessions in one command
 - submit tasks and workflows without leaving the same terminal
 - inspect status and tail logs
+- open Control Room (`/control-room`) for multi-pane live observability
 
 ## Start Hub
 
@@ -27,6 +28,10 @@ This boots:
 - web console at `http://127.0.0.1:18080/?token=relay_ro`
 - metrics endpoint at `http://127.0.0.1:19090/metrics`
 - one default worker (`w1`)
+
+Control Room URL (same auth token rules as classic web console):
+
+- `http://127.0.0.1:18080/control-room?token=relay_ro`
 
 Fast preset startup (no default workers, directly build a dual-project topology):
 
