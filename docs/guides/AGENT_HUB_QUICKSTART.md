@@ -7,6 +7,9 @@
 - isolate by project (`namespace`)
 - label workers with `agent-hint` for quick routing
 - bring up/down preset topologies for common team layouts
+- command palette + aliases for faster operator workflows
+- reusable task templates and live monitor snapshots
+- workspace profiles that open new terminal sessions in one command
 - submit tasks and workflows without leaving the same terminal
 - inspect status and tail logs
 
@@ -31,20 +34,55 @@ Fast preset startup (no default workers, directly build a dual-project topology)
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/agent_hub.ps1 -AutoWorkers 0 -AutoTopology dual
 ```
 
+Session restore behavior (default):
+
+- if no `-Root` is provided, hub auto-resumes last snapshot from `tmp/agent-hub-session.json`
+- resume includes previous `root`, active namespace, and topology/worker layout
+
+Disable/clear restore if needed:
+
+```powershell
+# start fresh without using saved snapshot
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/agent_hub.ps1 -NoAutoRestore
+
+# clear saved snapshot before startup
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/agent_hub.ps1 -ResetSession
+```
+
 ## Core Commands
 
 Inside the hub prompt:
 
 ```text
+panel
+palette [query]
+palette run <index> [query]
 project use <namespace>
 worker start <name> [namespace] [agent-hint]
 worker stop <name|all>
 topology up <team-a|team-b|one-project|dual>
 topology down <preset|all>
 topology list
+monitor [namespace|all]
+monitor watch [namespace|all] [intervalSec] [iterations]
+alias list
+alias set <name> <expansion>
+alias unset <name>
+template list
+template add <name> <agent> <priority> <text>
+template run <name> [namespace]
+template remove <name>
+workspace list
+workspace save <name> [topology]
+workspace show <name>
+workspace delete <name>
+workspace launch <name>
 submit <agent> <priority> <text>
 submitns <namespace> <agent> <priority> <text>
 submith <agent-hint> <priority> <text>
+session show
+session save
+session clear
 tasks [status] [limit]
 tasksns <namespace> [status] [limit]
 status
@@ -93,6 +131,32 @@ submit fail low one-project-failure-case
 tasks
 ```
 
+## Example: Productivity Features
+
+```text
+palette topo
+palette run 1 topo
+
+alias set ls status
+ls
+
+template add triage echo high investigate-failure
+template run triage project-a
+
+monitor
+monitor watch all 2 5
+```
+
+## Example: Workspace Profiles (Terminal-in-Terminal)
+
+```text
+workspace save prod dual
+workspace show prod
+workspace launch prod
+```
+
+`workspace launch` opens a new Windows Terminal window/tab with the saved root, namespace, and topology options.
+
 ## Log Tailing
 
 ```text
@@ -108,3 +172,5 @@ tail service:metrics out 80
 - Agent selection is controlled by submit payload (`--agent ...`), while worker count controls throughput/concurrency.
 - Use namespaces as project boundaries when you want one terminal to orchestrate multiple projects simultaneously.
 - `topology down all` stops all workers created from topology presets.
+- default startup shows a compact `panel`; use `help` for full command reference.
+- alias/template/workspace state is captured in the session snapshot for next launch restore.

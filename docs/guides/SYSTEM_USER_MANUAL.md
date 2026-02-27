@@ -1,327 +1,324 @@
-# RelayMesh 系统使用手册
+﻿# RelayMesh 系统使用手册（重写版）
 
-更新时间：`2026-02-27`
+更新时间：2026-02-27
 
-本文档面向“第一次上手 + 线上日常运维 + 故障调试”三个场景，给出可直接执行的命令和操作路径。
+本文是面向实际落地的操作手册，覆盖从首次启动、单终端并行多 Agent、多项目隔离、调试排障到运维巡检的完整流程。
 
-## 1. 系统简介
+## 1. 目标与核心概念
 
-RelayMesh 是一个基于 Java 的轻量多 Agent 运行时，核心由以下组件构成：
+RelayMesh 是一个可本地运行的多 Agent 任务编排与执行系统，核心能力：
 
-- 任务与状态存储：SQLite（`tasks` / `steps` / `messages` 等）
-- 队列与交付：文件总线（`inbox/processing/done/dead`）
-- 执行器：Worker（按优先级取任务、执行、重试、落死信）
-- 运维接口：CLI + Web 控制台 + Prometheus 指标
-- 多节点能力：membership、gossip、replication、ownership recovery
+- 任务提交与状态追踪（SQLite 持久化）
+- Worker 并行消费任务队列
+- 多项目隔离（通过 `namespace`）
+- Web 控制台与指标暴露（Prometheus）
+- 失败重试、死信、回放
+- Mesh 成员状态、复制与恢复能力
 
+你最关心的目标场景：
+
+- 一键启动后，在同一个终端里统一调度
+- 随时拉起多个 agent/worker
+- 多个项目并行处理，或同一个项目内并行处理
 
 ## 2. 环境准备
 
-### 2.1 依赖
+## 2.1 依赖
 
 - JDK 17+
 - Maven 3.9+
-- Windows / Linux / macOS（本文示例以 PowerShell 为主）
+- Windows PowerShell（本文命令以 PowerShell 为主）
 
-### 2.2 编译与测试
+## 2.2 快速自检
 
 ```powershell
 mvn test
 ```
 
-如果测试全绿，说明环境可用。
+如果测试通过，说明本机环境可运行。
 
+## 3. 一键进入单终端调度模式（推荐）
 
-## 3. 快速启动（5 分钟）
+仓库根目录执行：
 
-### 3.1 初始化运行目录
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/agent_hub.ps1 -AutoWorkers 0 -AutoTopology dual
+```
+
+这条命令会：
+
+- 初始化运行目录（默认在 `tmp/agent-hub-root-<timestamp>`）
+- 启动 `dual` 拓扑（`project-a` + `project-b`）
+- 每个项目拉起 `echo`/`fail` 两类 worker
+- 进入交互终端 `hub[default]>`
+
+你也可以不指定拓扑，进入后手动调度：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/agent_hub.ps1
+```
+
+## 4. Hub 终端常用命令
+
+## 4.1 项目（namespace）管理
+
+```text
+project create <namespace>
+project use <namespace>
+project list
+```
+
+## 4.2 Worker/Agent 并行管理
+
+```text
+worker start <name> [namespace] [agent-hint]
+worker stop <name|all>
+worker list
+```
+
+说明：
+
+- `name` 是 worker 实例名
+- `namespace` 用于项目隔离
+- `agent-hint` 是路由标签，可配合 `submith` 快速投递
+
+## 4.3 拓扑预设（最省事）
+
+```text
+topology up <team-a|team-b|one-project|dual>
+topology down <preset|all>
+topology list
+```
+
+预设含义：
+
+- `team-a`：`project-a` 双 worker
+- `team-b`：`project-b` 双 worker
+- `one-project`：`project-main` 多 worker 并行
+- `dual`：`team-a + team-b`
+
+## 4.4 任务提交与查询
+
+```text
+submit <agent> <priority> <text>
+submitns <namespace> <agent> <priority> <text>
+submith <agent-hint> <priority> <text>
+tasks [status] [limit]
+tasksns <namespace> [status] [limit]
+task <taskId>
+taskns <namespace> <taskId>
+replay <taskId>
+replayns <namespace> <taskId>
+```
+
+优先级可选：`high` / `normal` / `low`
+
+## 4.5 服务与日志
+
+```text
+service start web [port]
+service start metrics [port]
+service stop <web|metrics|all>
+service list
+open <web|metrics>
+tail <worker:<name>|service:web|service:metrics> [out|err] [lines]
+```
+
+## 5. 你要的两类并行场景
+
+## 5.1 一个终端管理多个项目
+
+```text
+topology up dual
+submitns project-a echo high build-a
+submitns project-b echo normal build-b
+tasksns project-a
+tasksns project-b
+```
+
+如果想按标签快速投递：
+
+```text
+submith echo normal quick-job
+```
+
+`submith` 会找一个带 `agent-hint=echo` 的 worker，对应 namespace 投递任务。
+
+## 5.2 一个项目内并行多个 Agent/Worker
+
+```text
+topology down all
+topology up one-project
+submitns project-main echo normal job-1
+submitns project-main echo high job-2
+submitns project-main fail low job-3
+tasksns project-main
+```
+
+核心点：
+
+- 同 namespace 多 worker 提升并发吞吐
+- `agent` 字段决定任务由哪类逻辑执行
+
+## 6. 纯 CLI 方式（不进 Hub 也能跑）
+
+## 6.1 初始化运行目录
 
 ```powershell
 mvn -q exec:java "-Dexec.args=--root tmp/manual-root init"
 ```
 
-### 3.2 提交一条任务
+## 6.2 提交任务
 
 ```powershell
-mvn -q exec:java "-Dexec.args=--root tmp/manual-root submit --agent echo --input hello-manual --priority normal"
+mvn -q exec:java "-Dexec.args=--root tmp/manual-root --namespace project-a submit --agent echo --priority normal --input hello"
 ```
 
-### 3.3 启动 worker（长循环）
+## 6.3 启动 worker（长循环）
 
 ```powershell
-mvn -q exec:java "-Dexec.args=--root tmp/manual-root worker --worker-id worker-a --node-id node-a --interval-ms 1000 --maintenance"
+mvn -q exec:java "-Dexec.args=--root tmp/manual-root --namespace project-a worker --worker-id worker-a1 --node-id node-a1 --interval-ms 1000 --maintenance"
 ```
 
-### 3.4 查询任务
+## 6.4 查询任务
 
 ```powershell
-mvn -q exec:java "-Dexec.args=--root tmp/manual-root tasks --limit 20"
+mvn -q exec:java "-Dexec.args=--root tmp/manual-root --namespace project-a tasks --limit 20"
 ```
 
-### 3.5 启动可视化与指标
+## 7. 可视化与指标
+
+## 7.1 启动 Web
 
 ```powershell
 mvn -q exec:java "-Dexec.args=--root tmp/manual-root serve-web --port 18080 --ro-token relay_ro --rw-token relay_rw"
+```
+
+访问：`http://127.0.0.1:18080/?token=relay_ro`
+
+## 7.2 启动 Metrics
+
+```powershell
 mvn -q exec:java "-Dexec.args=--root tmp/manual-root serve-metrics --port 19090"
 ```
 
-访问：
+访问：`http://127.0.0.1:19090/metrics`
 
-- 控制台：`http://127.0.0.1:18080/?token=relay_ro`
-- 指标：`http://127.0.0.1:19090/metrics`
+## 8. 运行目录说明
 
-
-## 4. 运行目录说明
-
-当你使用 `--root <dir>` 时，主要会生成：
+当你指定 `--root <dir>` 时，主要目录如下：
 
 - `<root>/relaymesh.db`：主数据库
-- `<root>/inbox/`：待处理消息（按优先级）
-- `<root>/processing/`：处理中消息
-- `<root>/done/`：已完成消息元数据
-- `<root>/dead/`：失败消息元数据
-- `<root>/payload/`：消息负载
+- `<root>/inbox`：待处理队列
+- `<root>/processing`：处理中
+- `<root>/done`：完成元数据
+- `<root>/dead`：死信元数据
+- `<root>/payload`：任务负载
 - `<root>/audit/audit.log`：审计日志
-- `<root>/reports/`：冲突报告/收敛报告等
-- `<root>/relaymesh-settings.json`：运行参数（可热重载）
+- `<root>/reports`：报告输出
+- `<root>/relaymesh-settings.json`：可热更新配置
 
+## 9. 调试与排障
 
-## 5. 命令体系总览
+## 9.1 先看状态
 
-查看总命令：
+在 Hub 终端执行：
 
-```powershell
-mvn -q exec:java "-Dexec.args=--help"
+```text
+status
+worker list
+service list
 ```
 
-建议按以下分组理解：
+## 9.2 追日志
 
-### 5.1 任务与工作流
-
-- `submit`：提交单步任务
-- `submit-workflow --file <json>`：提交 DAG 工作流
-- `worker`：执行任务（支持单次或循环）
-- `task <taskId>`：查看任务详情
-- `tasks --status --limit --offset`：列表查询
-- `workflow <taskId>`：查看工作流 step/依赖
-- `cancel <taskId> --mode hard|soft`：取消任务
-- `task-export <taskId> --out <file>`：导出任务快照
-
-### 5.2 故障与恢复
-
-- `replay <taskId>`：重放单个死信
-- `replay-batch --status DEAD_LETTER --limit N`：批量重放
-- `dead-export --out <file>`：导出死信元数据
-- `mesh-recover --limit N`：回收 DEAD owner 的运行中 step
-- `mesh-prune --older-than-ms --limit`：清理历史 DEAD 节点
-
-### 5.3 多节点 / Mesh
-
-- `members`：成员列表
-- `maintenance --node-id <id>`：一次维护 tick
-- `gossip`：单轮/循环 gossip
-- `gossip-sync`：反熵同步
-- `mesh-summary`：Mesh 风险汇总
-- `ownership-events`：ownership 事件时间线
-- `lease-conflicts` / `lease-report`：冲突明细与聚合报告
-
-### 5.4 复制与快照
-
-- `replication-export --out <file> [--since-ms ...]`
-- `replication-import --in <file>`
-- `replication-controller`：持续 pull/push 控制器
-- `snapshot-export --out <dir>`
-- `snapshot-import --in <dir>`（破坏性导入）
-- `convergence-report`：复制收敛报告
-
-### 5.5 观测与治理
-
-- `stats`：运行统计
-- `metrics` / `serve-metrics`：指标输出
-- `health`：健康检查
-- `audit-tail` / `audit-query`：审计查看与过滤
-- `audit-verify`：审计完整性校验
-- `audit-siem-export --out <ndjson>`：导出 SIEM 格式
-- `slo-evaluate`：SLO 评估与告警状态文件
-
-### 5.6 安全与密钥
-
-- `serve-web`：Web 控制台（支持 token 鉴权和限流）
-- `serve-node-rpc`：HTTPS 节点 RPC（支持可选 mTLS）
-- `node-rpc-revocation-template --out <file>`：吊销模板
-- `payload-key-status` / `payload-key-rotate`：payload 密钥状态与轮换
-
-### 5.7 Schema 与迁移
-
-- `schema-migrations`：查看已应用迁移
-- `schema-rollback --version <version>`：安全子集回滚
-
-
-## 6. Web 控制台与 API
-
-### 6.1 启动示例
-
-```powershell
-mvn -q exec:java "-Dexec.args=--root tmp/manual-root serve-web --port 18080 --ro-token relay_ro --rw-token relay_rw --write-rate-limit-per-min 120"
+```text
+tail worker:a-echo-1 out 100
+tail worker:a-fail-1 err 100
+tail service:web out 80
 ```
 
-### 6.2 主要 API
+## 9.3 任务异常排查顺序
 
-- `GET /api/tasks`
-- `GET /api/dead`
-- `GET /api/workflow?taskId=...`
-- `GET /api/stats`
-- `GET /api/members`
-- `GET /api/lease-conflicts`
-- `POST /api/cancel`
-- `POST /api/replay`
-- `POST /api/replay-batch`
-- `GET /api/audit-query`
-- `GET /api/metrics`
-- `GET /events`（SSE）
+1. `taskns <namespace> <taskId>` 看 `status`、`lastError`
+2. `tasksns <namespace> RETRYING 20` 看是否持续重试
+3. 检查 `audit.log` 与 worker 错误日志
+4. 需要时执行 `replayns <namespace> <taskId>`
 
-### 6.3 鉴权传递方式
-
-- Query 参数：`?token=relay_ro`
-- Header：`Authorization: Bearer <token>`
-
-默认写接口是 `POST-only`；如需兼容可启用 `--allow-get-writes`（不建议长期开启）。
-
-
-## 7. 指标与可观测
-
-### 7.1 拉取方式
+## 10. 关键运维命令（CLI）
 
 ```powershell
-Invoke-WebRequest -UseBasicParsing "http://127.0.0.1:19090/metrics" | Select-Object -Expand Content
+mvn -q exec:java "-Dexec.args=--root <root> --namespace <ns> stats"
+mvn -q exec:java "-Dexec.args=--root <root> --namespace <ns> health"
+mvn -q exec:java "-Dexec.args=--root <root> --namespace <ns> lease-conflicts --since-hours 24 --limit 50"
+mvn -q exec:java "-Dexec.args=--root <root> --namespace <ns> mesh-summary"
+mvn -q exec:java "-Dexec.args=--root <root> --namespace <ns> replay-batch --status DEAD_LETTER --limit 20"
 ```
 
-### 7.2 常看指标
+## 11. 常见问题
 
-- `relaymesh_tasks_total{status=...}`
-- `relaymesh_steps_total{status=...}`
-- `relaymesh_messages_total{state=...}`
-- `relaymesh_queue_lag_ms`
-- `relaymesh_step_latency_ms{quantile="0.95|0.99"}`
-- `relaymesh_dead_letter_growth_1h`
-- `relaymesh_dead_owner_reclaimed_total`
-- `relaymesh_mesh_nodes_pruned_total`
-- `relaymesh_worker_paused_total`
-- `relaymesh_web_write_rate_limited_total`
+## 11.1 为什么任务卡在 `RETRYING`？
 
+常见原因：
 
-## 8. 调试手册（可见调试）
+- Agent 逻辑持续失败
+- Payload 解密失败（密钥不匹配）
+- 外部依赖不可用
 
-### 8.1 推荐调试拓扑
+先看 `taskns` 的 `lastError`，再看 worker `err` 日志。
 
-开 3 个终端：
+## 11.2 为什么 `submith` 找不到 worker？
 
-1. `worker` 长循环
-2. `serve-web`
-3. `serve-metrics`
+因为当前没有带对应 `agent-hint` 的 worker。先启动：
 
-再开第 4 个终端执行 submit / query / replay。
-
-### 8.2 实时观察命令
-
-```powershell
-# 审计日志
-Get-Content "tmp/manual-root/audit/audit.log" -Wait
-
-# worker 输出（如果你用重定向写到日志）
-Get-Content "tmp/manual-root/debug-logs/worker.out.log" -Wait
-
-# tasks 状态轮询
-while ($true) { mvn -q exec:java "-Dexec.args=--root tmp/manual-root tasks --limit 10"; Start-Sleep 2 }
+```text
+worker start my-worker project-a echo
+submith echo normal hello
 ```
 
-### 8.3 一条完整调试链路
+## 11.3 如何彻底清空 Hub 拉起的 worker？
 
-1. 提交 `echo` 任务，确认 `SUCCESS`
-2. 提交 `fail` 任务，观察 `RETRYING` / `DEAD_LETTER`
-3. 在 `audit.log` 搜 `task.submit`、`step.execute`
-4. 在 `/metrics` 查看任务状态和重试/死信相关指标
-5. 用 `replay` 或 `replay-batch` 验证恢复路径
-
-
-## 9. 运行参数（relaymesh-settings.json）
-
-配置文件路径：`<root>/relaymesh-settings.json`
-
-支持热重载：
-
-```powershell
-mvn -q exec:java "-Dexec.args=--root tmp/manual-root reload-settings"
-mvn -q exec:java "-Dexec.args=--root tmp/manual-root settings-history --limit 20"
+```text
+topology down all
+worker stop all
 ```
 
-常见字段（节选）：
+## 12. 推荐阅读顺序
 
-- `leaseTimeoutMs`
-- `suspectAfterMs` / `deadAfterMs`
-- `suspectRecoverMinMs` / `deadRecoverMinMs`
-- `pauseWorkerWhenLocalNotAlive`
-- `maxAttempts` / `baseBackoffMs` / `maxBackoffMs`
-- `gossipFanout` / `gossipPacketTtl`
-- `meshPruneOlderThanMs` / `meshPruneLimit` / `meshPruneIntervalMs`
-- `minFreeDiskBytes`
-- `maxIngressQueueDepth` / `maxRunningSteps` / `submitRateLimitPerMin`
-- `sloQueueLagTargetMs` / `sloStepP95TargetMs` / `sloStepP99TargetMs`
+1. `README.md`
+2. `docs/guides/AGENT_HUB_QUICKSTART.md`
+3. `docs/guides/READING_GUIDE.md`
+4. `docs/RELAYMESH_FINAL_ARCHITECTURE.md`
+5. `docs/PRODUCTION_READINESS.md`
 
+如果你主要目标是“单终端并行调度”，先只看第 3、4、5 章即可上手。
 
-## 10. 生产建议
+## 13. RelayMesh Studio 增强模式（终端套终端）
 
-- 所有命令都固定 `--root`，避免写入到错误目录
-- Web 端必须开启鉴权，不要裸奔
-- 持续采集 `metrics` + `audit.log`
-- 定期执行：
-  - `audit-verify`
-  - `mesh-prune`
-  - `lease-report`
-  - `snapshot-export`
-- 变更运行参数后，做一次 `reload-settings` 并检查 `settings-history`
+如果你通过桌面快捷方式启动（Windows Terminal Profile: `RelayMesh Studio`），建议按下面路径使用：
 
+1. 启动后先看 `panel`（紧凑操作面板）
+2. 用 `palette <keyword>` 像命令面板一样搜索命令
+3. 用 `alias set` 定义高频命令别名
+4. 用 `template add/run` 快速提交标准任务
+5. 用 `workspace save/launch` 打开新的“并行终端会话”
+6. 用 `monitor watch all 2 10` 做实时状态巡检
 
-## 11. 常见故障与处理
+常用命令：
 
-### 11.1 任务长期 RETRYING
+```text
+palette [query]
+alias set ls status
+template add smoke echo normal smoke-check
+template run smoke project-a
+workspace save dev dual
+workspace launch dev
+monitor watch all 2 10
+session show
+```
 
-排查顺序：
+说明：
 
-1. `task <taskId>` 看 `lastError`
-2. `audit-query --task-id <taskId>` 看失败轨迹
-3. 查看 Agent 配置和输入
-4. 评估是否 `replay` 或人工取消
-
-### 11.2 Web 写接口返回 401/403
-
-- 检查 token 是否正确
-- 检查 token 角色（reader/writer/admin）
-- 检查是否命中 namespace 限制
-
-### 11.3 Web 写接口返回 429
-
-- 命中 `--write-rate-limit-per-min`
-- 降低请求频率或调高限流参数
-
-### 11.4 节点状态误判抖动
-
-- 调整 `suspectRecoverMinMs` / `deadRecoverMinMs`
-- 用 `membership_recovery_suppressed_total` 指标验证抖动抑制效果
-
-### 11.5 复制/恢复前后状态不一致
-
-- 先做 `snapshot-export`
-- 用 `convergence-report` + 审计日志对账
-- 必要时执行 `snapshot-import` 回滚
-
-
-## 12. 参考文档
-
-- `README.md`
-- `docs/README.md`
-- `docs/guides/READING_GUIDE.md`
-- `docs/RELAYMESH_FINAL_ARCHITECTURE.md`
-- `docs/PRODUCTION_READINESS.md`
-- `docs/NODE_RPC_SECURITY.md`
-- `docs/ENDGAME_BACKLOG.md`
+- `workspace launch` 会打开新的 Windows Terminal，会话参数从保存的 profile 读取。
+- `session` 会持久化 root/namespace/topology/alias/template，便于下次恢复。
+- `session clear` 可清掉自动恢复状态，重新从干净会话启动。
