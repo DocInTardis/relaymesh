@@ -1,0 +1,32 @@
+# Build
+/target/
+*.class
+*.jar
+*.war
+*.ear
+
+# Runtime data
+/data/
+/tmp/
+/tmp/*
+!/tmp/.gitkeep
+/demo-*/
+/verify-*/
+/.taskid.tmp
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+
+# Local IDE / OS
+.idea/
+.vscode/
+*.iml
+*.swp
+Thumbs.db
+.DS_Store
+
+# Logs and temporary exports
+*.log
+*.tmp
+*.bak
