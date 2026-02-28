@@ -59,6 +59,7 @@ After one-click startup, operators can:
 - 2026-02-28: committed and pushed Phase K as `507778c` to `origin/main`.
 - 2026-02-28: extracted control-room route registration from `serve-web` main flow into `registerControlRoomRoutes(...)`.
 - 2026-02-28: re-validated with compile + full test + control-room API smoke script.
+- 2026-02-28: committed and pushed Phase L as `0cb17c7` to `origin/main`.
 
 ## 6. Current Execution Batch (Phase K)
 
@@ -84,7 +85,7 @@ After one-click startup, operators can:
 - [x] L2: Keep all control-room routes and auth behavior unchanged.
 - [x] L3: Re-run compile and full tests after modularization.
 - [x] L4: Re-run control-room API smoke script for behavior regression check.
-- [ ] L5: Commit and push to `origin/main`.
+- [x] L5: Commit and push to `origin/main`.
 
 ### 7.2 Acceptance
 
