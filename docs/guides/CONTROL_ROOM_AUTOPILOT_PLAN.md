@@ -91,12 +91,26 @@ Acceptance:
 - layout survives browser reload on same machine/profile
 - preset switch updates panes immediately
 
+## 3.6 Phase F - Operator Action Bridge + Dynamic Panes
+
+Delivered:
+
+- `POST /api/control-room/action` write-action endpoint
+- control-room action buttons for `cancel`, `replay`, `replay_batch`
+- dynamic pane count (2..9) with add/remove controls
+- keyboard pane-size controls (`Ctrl++`, `Ctrl+-`)
+
+Acceptance:
+
+- operators can execute write actions from control-room without leaving page
+- action endpoint enforces namespace auth and write permission
+- pane count changes take effect immediately and persist in layout state
+
 ## 4. Next Iteration Backlog
 
 Planned for future autopilot rounds:
 
 - persistent operator profiles in backend (not only browser local storage)
-- command bridge from control-room clicks to Hub actions
 - richer workflow pane with dependency graph
 - desktop shell packaging (JavaFX/Tauri/Electron) with native shortcuts
-- multi-screen docking layouts and monitor-wall mode
+- multi-screen docking layouts and monitor-wall mode (cross-monitor placement)

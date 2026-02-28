@@ -1196,6 +1196,86 @@ public final class RelayMeshCommand implements Runnable {
                 );
                 writeJson(exchange, payload, 200);
             });
+            server.createContext("/api/control-room/action", exchange -> {
+                if (!allowWriteMethod(exchange, allowGetWrites, runtime, "/api/control-room/action")) return;
+                if (!allowWriteRate(exchange, writeRateLimiter, runtime, "/api/control-room/action")) return;
+                Map<String, String> q = parseParams(exchange);
+                AuthPrincipal principal = authorizePrincipal(exchange, q, auth, true);
+                if (principal == null) return;
+                String action = q.get("action");
+                if (action == null || action.isBlank()) {
+                    writeJson(exchange, Map.of("error", "missing_action"), 400);
+                    return;
+                }
+                String requestedNamespace = normalizeNamespace(q.get("namespace"), defaultNamespace);
+                List<String> discovered = discoverNamespaces(rootBaseDir, defaultNamespace);
+                if (!discovered.contains(requestedNamespace)) {
+                    writeJson(
+                            exchange,
+                            Map.of("error", "namespace_not_found", "namespace", requestedNamespace),
+                            404
+                    );
+                    return;
+                }
+                if (!principalCanAccessNamespace(principal, requestedNamespace)) {
+                    writeJson(
+                            exchange,
+                            Map.of("error", "forbidden_namespace", "namespace", requestedNamespace),
+                            403
+                    );
+                    return;
+                }
+                RelayMeshRuntime scoped = runtimeForNamespace(parent.root, requestedNamespace, namespaceRuntimeCache);
+                Map<String, Object> auditMeta = new LinkedHashMap<>(requestAuditMeta(exchange, "/api/control-room/action"));
+                auditMeta.put("namespace", requestedNamespace);
+                auditMeta.put("control_action", action);
+                LinkedHashMap<String, Object> response = new LinkedHashMap<>();
+                response.put("timestamp", Instant.now().toString());
+                response.put("namespace", requestedNamespace);
+                response.put("action", action);
+                switch (action.trim().toLowerCase(Locale.ROOT)) {
+                    case "cancel" -> {
+                        String taskId = q.get("taskId");
+                        if (taskId == null || taskId.isBlank()) {
+                            writeJson(exchange, Map.of("error", "missing_task_id"), 400);
+                            return;
+                        }
+                        String mode = q.get("mode");
+                        String reason = q.get("reason");
+                        Object result = scoped.cancelTaskViaWeb(
+                                taskId,
+                                reason,
+                                mode == null || mode.isBlank() ? "hard" : mode,
+                                auditMeta
+                        );
+                        response.put("result", result);
+                    }
+                    case "replay" -> {
+                        String taskId = q.get("taskId");
+                        if (taskId == null || taskId.isBlank()) {
+                            writeJson(exchange, Map.of("error", "missing_task_id"), 400);
+                            return;
+                        }
+                        Object result = scoped.replayDeadLetterViaWeb(taskId, auditMeta);
+                        response.put("result", result);
+                    }
+                    case "replay_batch" -> {
+                        String status = q.get("status");
+                        int limit = clamp(parseIntOrDefault(q.get("limit"), 100), 1, 500);
+                        Object result = scoped.replayDeadLetterBatchViaWeb(
+                                status == null || status.isBlank() ? "DEAD_LETTER" : status,
+                                limit,
+                                auditMeta
+                        );
+                        response.put("result", result);
+                    }
+                    default -> {
+                        writeJson(exchange, Map.of("error", "unsupported_action", "action", action), 400);
+                        return;
+                    }
+                }
+                writeJson(exchange, response, 200);
+            });
             server.createContext("/events/control-room", exchange -> {
                 Map<String, String> q = parseParams(exchange);
                 AuthPrincipal principal = authorizePrincipal(exchange, q, auth, false);
@@ -3204,7 +3284,13 @@ public final class RelayMeshCommand implements Runnable {
                     }
                     .ops {
                       display: grid;
-                      grid-template-columns: repeat(6, minmax(0, 1fr));
+                      grid-template-columns: repeat(8, minmax(0, 1fr));
+                      gap: 8px;
+                      margin-top: 8px;
+                    }
+                    .actions {
+                      display: grid;
+                      grid-template-columns: repeat(9, minmax(0, 1fr));
                       gap: 8px;
                       margin-top: 8px;
                     }
@@ -3241,6 +3327,19 @@ public final class RelayMeshCommand implements Runnable {
                       font-family: "IBM Plex Mono", "JetBrains Mono", Consolas, monospace;
                       font-size: 12px;
                       color: var(--accent2);
+                    }
+                    .action-result {
+                      margin-top: 8px;
+                      font-family: "IBM Plex Mono", "JetBrains Mono", Consolas, monospace;
+                      font-size: 12px;
+                      color: #0f172a;
+                      border: 1px solid #cbd5e1;
+                      background: #f8fafc;
+                      border-radius: 8px;
+                      padding: 8px;
+                      max-height: 180px;
+                      overflow: auto;
+                      white-space: pre-wrap;
                     }
                     .grid {
                       display: grid;
@@ -3292,6 +3391,9 @@ public final class RelayMeshCommand implements Runnable {
                       .ops {
                         grid-template-columns: repeat(3, minmax(0, 1fr));
                       }
+                      .actions {
+                        grid-template-columns: repeat(3, minmax(0, 1fr));
+                      }
                       .pane-head {
                         grid-template-columns: 120px 1fr 1fr;
                       }
@@ -3304,6 +3406,9 @@ public final class RelayMeshCommand implements Runnable {
                         grid-template-columns: 1fr;
                       }
                       .ops {
+                        grid-template-columns: 1fr;
+                      }
+                      .actions {
                         grid-template-columns: 1fr;
                       }
                     }
@@ -3341,19 +3446,35 @@ public final class RelayMeshCommand implements Runnable {
                         <button class="secondary" onclick="copyShareLink()">Copy Share Link</button>
                         <button class="secondary" onclick="window.location.href='/'">Open Classic Console</button>
                         <button class="secondary" onclick="window.open('/?token=' + encodeURIComponent(authToken()), '_blank')">Classic In New Tab</button>
+                        <button class="secondary" onclick="addPane()">Add Pane</button>
+                        <button class="secondary" onclick="removePane()">Remove Pane</button>
                         <button class="secondary" onclick="openApiNamespaces()">Open /api/namespaces</button>
                         <button class="secondary" onclick="openApiSnapshot()">Open Snapshot API</button>
                         <button class="secondary" onclick="toggleFullscreen()">Toggle Fullscreen</button>
+                      </div>
+                      <div class="actions">
+                        <input id="actionNamespaceInput" placeholder="action namespace (blank = focused pane)">
+                        <input id="actionTaskIdInput" placeholder="task id (blank = infer from pane)">
+                        <input id="actionReasonInput" placeholder="reason (optional)">
+                        <button onclick="runControlAction('cancel','soft')">Soft Cancel</button>
+                        <button onclick="runControlAction('cancel','hard')">Hard Cancel</button>
+                        <button onclick="runControlAction('replay')">Replay Task</button>
+                        <button onclick="runControlAction('replay_batch')">Replay Batch</button>
+                        <button class="secondary" onclick="clearActionInputs()">Clear Action Inputs</button>
+                        <button class="secondary" onclick="clearActionResult()">Clear Action Output</button>
                       </div>
                       <div class="hint">
                         Hotkeys: Alt+1..9 focus panel, Tab/Shift+Tab cycle, Ctrl+R refresh, Ctrl+S save layout, Ctrl+L copy link. Shared snapshot feeds every panel.
                       </div>
                       <div id="statusLine" class="status mono">booting...</div>
+                      <div id="actionResult" class="action-result">action output: ready</div>
                     </div>
                     <section id="paneGrid" class="grid"></section>
                   </div>
                   <script>
                     const STORAGE_KEY = 'relaymesh.control-room.layout.v2';
+                    const MAX_PANES = 9;
+                    const MIN_PANES = 2;
                     const PRESETS = {
                       ops: [
                         { namespace: 'default', view: 'tasks', limit: 20, status: '' },
@@ -3421,15 +3542,29 @@ public final class RelayMeshCommand implements Runnable {
                       return r.json();
                     }
 
+                    async function postForm(url, params) {
+                      const body = new URLSearchParams(params).toString();
+                      const r = await fetch(withAuth(url), {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                        body
+                      });
+                      if (!r.ok) {
+                        throw new Error(await r.text());
+                      }
+                      return r.json();
+                    }
+
                     function paneCount() {
-                      return 4;
+                      return state.panes.length;
                     }
 
                     function ensurePaneShape(raw) {
                       const views = new Set(['tasks', 'dead', 'conflicts', 'members', 'stats']);
                       const source = Array.isArray(raw) ? raw : [];
                       const out = [];
-                      for (let i = 0; i < paneCount(); i++) {
+                      const targetCount = Math.max(MIN_PANES, Math.min(MAX_PANES, source.length > 0 ? source.length : 4));
+                      for (let i = 0; i < targetCount; i++) {
                         const src = source[i] || {};
                         const view = typeof src.view === 'string' && views.has(src.view) ? src.view : 'tasks';
                         const namespace = typeof src.namespace === 'string' && src.namespace.trim() ? src.namespace.trim() : 'default';
@@ -3538,6 +3673,12 @@ public final class RelayMeshCommand implements Runnable {
                         else pane.classList.remove('active');
                       });
                       persistLayoutSoon();
+                    }
+
+                    function activePaneConfig() {
+                      if (state.panes.length === 0) return null;
+                      const idx = Math.max(0, Math.min(state.panes.length - 1, state.activePane));
+                      return state.panes[idx] || null;
                     }
 
                     function selectedNamespacesQuery() {
@@ -3680,6 +3821,73 @@ public final class RelayMeshCommand implements Runnable {
                       }
                     }
 
+                    function setActionResult(text) {
+                      document.getElementById('actionResult').textContent = text;
+                    }
+
+                    function clearActionResult() {
+                      setActionResult('action output: cleared');
+                    }
+
+                    function clearActionInputs() {
+                      document.getElementById('actionNamespaceInput').value = '';
+                      document.getElementById('actionTaskIdInput').value = '';
+                      document.getElementById('actionReasonInput').value = '';
+                    }
+
+                    function inferTaskIdFromActivePane() {
+                      if (!state.snapshot || !state.snapshot.data) return '';
+                      const active = activePaneConfig();
+                      if (!active) return '';
+                      const slot = state.snapshot.data[active.namespace];
+                      if (!slot) return '';
+                      const rows = active.view === 'dead' ? safeArray(slot.dead) : safeArray(slot.tasks);
+                      if (rows.length === 0) return '';
+                      const first = rows[0];
+                      return first && first.taskId ? String(first.taskId) : '';
+                    }
+
+                    function actionNamespace() {
+                      const raw = document.getElementById('actionNamespaceInput').value.trim();
+                      if (raw) return raw;
+                      const active = activePaneConfig();
+                      if (active && active.namespace) return active.namespace;
+                      return 'default';
+                    }
+
+                    function actionTaskId() {
+                      const raw = document.getElementById('actionTaskIdInput').value.trim();
+                      if (raw) return raw;
+                      return inferTaskIdFromActivePane();
+                    }
+
+                    async function runControlAction(action, mode = '') {
+                      const namespace = actionNamespace();
+                      const reason = document.getElementById('actionReasonInput').value.trim();
+                      const payload = { action, namespace };
+                      if (mode) payload.mode = mode;
+                      if (reason) payload.reason = reason;
+                      if (action === 'cancel' || action === 'replay') {
+                        const taskId = actionTaskId();
+                        if (!taskId) {
+                          setActionResult('action failed: missing task id');
+                          return;
+                        }
+                        payload.taskId = taskId;
+                      }
+                      if (action === 'replay_batch') {
+                        payload.status = 'DEAD_LETTER';
+                        payload.limit = '50';
+                      }
+                      try {
+                        const out = await postForm('/api/control-room/action', payload);
+                        setActionResult(JSON.stringify(out, null, 2));
+                        await loadSnapshot();
+                      } catch (e) {
+                        setActionResult('action failed: ' + e.message);
+                      }
+                    }
+
                     function manualRefresh() {
                       loadSnapshot().catch(err => {
                         setStatusLine('snapshot failed: ' + err.message);
@@ -3751,6 +3959,7 @@ public final class RelayMeshCommand implements Runnable {
                         })),
                         namespaces: document.getElementById('namespacesInput').value.trim(),
                         statusFilter: document.getElementById('statusFilterInput').value.trim(),
+                        actionNs: document.getElementById('actionNamespaceInput').value.trim(),
                         refreshSec: maxPollIntervalSec(),
                         transport: currentTransport(),
                         preset: document.getElementById('presetInput').value || '',
@@ -3765,6 +3974,9 @@ public final class RelayMeshCommand implements Runnable {
                       }
                       if (typeof layout.statusFilter === 'string') {
                         document.getElementById('statusFilterInput').value = layout.statusFilter;
+                      }
+                      if (typeof layout.actionNs === 'string') {
+                        document.getElementById('actionNamespaceInput').value = layout.actionNs;
                       }
                       if (layout.refreshSec != null) {
                         document.getElementById('refreshSecInput').value = String(layout.refreshSec);
@@ -3868,6 +4080,42 @@ public final class RelayMeshCommand implements Runnable {
                       document.exitFullscreen().catch(() => {});
                     }
 
+                    function addPane() {
+                      if (state.panes.length >= MAX_PANES) {
+                        setStatusLine('max panes reached');
+                        return;
+                      }
+                      const fallbackNs = state.namespaces.length > 0 ? state.namespaces[0] : 'default';
+                      state.panes.push({
+                        index: state.panes.length + 1,
+                        namespace: fallbackNs,
+                        view: 'tasks',
+                        limit: 12,
+                        status: ''
+                      });
+                      for (let i = 0; i < state.panes.length; i++) {
+                        state.panes[i].index = i + 1;
+                      }
+                      renderPaneShells();
+                      renderAllPaneData();
+                      persistLayoutSoon();
+                    }
+
+                    function removePane() {
+                      if (state.panes.length <= MIN_PANES) {
+                        setStatusLine('min panes reached');
+                        return;
+                      }
+                      state.panes.pop();
+                      for (let i = 0; i < state.panes.length; i++) {
+                        state.panes[i].index = i + 1;
+                      }
+                      state.activePane = Math.min(state.activePane, state.panes.length - 1);
+                      renderPaneShells();
+                      renderAllPaneData();
+                      persistLayoutSoon();
+                    }
+
                     function bindGlobalKeys() {
                       document.addEventListener('keydown', ev => {
                         if (ev.altKey && !ev.ctrlKey && !ev.shiftKey) {
@@ -3897,6 +4145,16 @@ public final class RelayMeshCommand implements Runnable {
                         if (ev.ctrlKey && (ev.key === 'l' || ev.key === 'L')) {
                           ev.preventDefault();
                           copyShareLink();
+                          return;
+                        }
+                        if (ev.ctrlKey && (ev.key === '=' || ev.key === '+')) {
+                          ev.preventDefault();
+                          addPane();
+                          return;
+                        }
+                        if (ev.ctrlKey && ev.key === '-') {
+                          ev.preventDefault();
+                          removePane();
                         }
                       });
                     }
@@ -3924,6 +4182,10 @@ public final class RelayMeshCommand implements Runnable {
                         state.pendingPreset = preset;
                         document.getElementById('presetInput').value = preset;
                       }
+                      const actionNs = qp.get('actionNs') || '';
+                      if (actionNs) {
+                        document.getElementById('actionNamespaceInput').value = actionNs;
+                      }
                       const layout = qp.get('layout') || '';
                       if (layout) {
                         try {
@@ -3945,12 +4207,14 @@ public final class RelayMeshCommand implements Runnable {
                       document.getElementById('refreshSecInput').addEventListener('change', triggerRefresh);
                       document.getElementById('transportInput').addEventListener('change', triggerRefresh);
                       document.getElementById('presetInput').addEventListener('change', persistLayoutSoon);
+                      document.getElementById('actionNamespaceInput').addEventListener('change', persistLayoutSoon);
                     }
 
                     async function bootstrap() {
                       initFromQuery();
                       bindGlobalKeys();
                       bindTopControls();
+                      clearActionResult();
                       document.getElementById('tokenInput').addEventListener('change', () => {
                         stopRealtime();
                         loadNamespaces()

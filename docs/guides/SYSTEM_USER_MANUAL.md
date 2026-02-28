@@ -210,8 +210,10 @@ Control Room 默认提供 4 个面板，并且由同一次后端快照统一驱�
 - 修改刷新间隔（1-60 秒）
 - 选择数据传输模式：`sse`（实时流）或 `poll`（轮询）
 - 一键应用预设布局（`ops` / `incident` / `throughput` / `audit`）
+- 动态增加/减少监控面板（2-9 个）
 - 保存/清空本地布局（浏览器 `localStorage`）
 - 复制分享链接（不包含 token）
+- 在控制室直接执行写操作（Cancel / Replay / Replay Batch）
 
 快捷键：
 
@@ -220,12 +222,23 @@ Control Room 默认提供 4 个面板，并且由同一次后端快照统一驱�
 - `Ctrl+R`：立即刷新快照
 - `Ctrl+S`：保存当前布局
 - `Ctrl+L`：复制分享链接
+- `Ctrl++`：增加面板
+- `Ctrl+-`：减少面板
 
 相关 API（调试时可直接调用）：
 
 - `GET /api/namespaces`
 - `GET /api/control-room/snapshot?namespaces=all&taskLimit=30&deadLimit=30&conflictLimit=20`
 - `GET /events/control-room?namespaces=all&intervalMs=3000`（SSE）
+- `POST /api/control-room/action`（写操作入口）
+
+`/api/control-room/action` 支持动作：
+
+- `action=cancel`（参数：`namespace` `taskId` `mode=soft|hard` `reason`）
+- `action=replay`（参数：`namespace` `taskId`）
+- `action=replay_batch`（参数：`namespace` `status` `limit`）
+
+如果启用了 web token 鉴权，写动作需要 `rw-token` 或具备 write 权限的 principal。
 
 ## 7.3 启动 Metrics
 

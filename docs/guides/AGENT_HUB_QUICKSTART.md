@@ -38,6 +38,8 @@ Control Room enhancements:
 - switch transport mode between `sse` (live stream) and `poll`
 - save and restore pane layouts in browser local storage
 - apply preset layouts (`ops` / `incident` / `throughput` / `audit`)
+- add/remove panes for monitor-wall style views (`Ctrl++` / `Ctrl+-`)
+- execute control actions directly from web UI (`cancel` / `replay` / `replay_batch`)
 
 Fast preset startup (no default workers, directly build a dual-project topology):
 

@@ -42,6 +42,7 @@ Reason: CLI methods are a thin map of capabilities exposed by `RelayMeshRuntime`
    - route registration for `/control-room`
    - route registration for `/api/namespaces`
    - route registration for `/api/control-room/snapshot`
+   - route registration for `/api/control-room/action`
    - route registration for `/events/control-room`
 2. Continue in the same file with helper methods:
    - auth and principal checks (`authorize*`)
