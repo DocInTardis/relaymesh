@@ -31,7 +31,7 @@ After one-click startup, operators can:
 - [x] Phase J: Maintainability refactor round 2 (namespace/snapshot/workflow helpers extraction).
 - [x] Phase K: Control-room API integration test coverage expansion.
 - [x] Phase L: serve-web route registration modularization.
-- [ ] Phase M: desktop shell and packaging path.
+- [x] Phase M: desktop shell and packaging path.
 
 ## 4. Current Execution Batch (Phase J)
 
@@ -60,6 +60,7 @@ After one-click startup, operators can:
 - 2026-02-28: extracted control-room route registration from `serve-web` main flow into `registerControlRoomRoutes(...)`.
 - 2026-02-28: re-validated with compile + full test + control-room API smoke script.
 - 2026-02-28: committed and pushed Phase L as `0cb17c7` to `origin/main`.
+- 2026-02-28: added studio launcher scripts (`start_studio.ps1`, `install_studio_shortcut.ps1`) and verified with dry-run and shortcut generation test.
 
 ## 6. Current Execution Batch (Phase K)
 
@@ -92,3 +93,20 @@ After one-click startup, operators can:
 - `ServeWebCommand.call()` is shorter and clearer.
 - Control-room route wiring lives in a dedicated helper method.
 - Existing control-room API behavior remains intact after refactor.
+
+## 8. Current Execution Batch (Phase M)
+
+### 8.1 Tasks
+
+- [x] M1: Add one-click studio startup script (`scripts/start_studio.ps1`).
+- [x] M2: Add desktop shortcut installer script (`scripts/install_studio_shortcut.ps1`).
+- [x] M3: Validate launcher script in non-interactive smoke mode.
+- [x] M4: Validate shortcut installer with temp `.lnk` output.
+- [x] M5: Update user docs and quickstart for launcher flow.
+- [ ] M6: Commit and push to `origin/main`.
+
+### 8.2 Acceptance
+
+- Operators can enter studio mode with one command.
+- Operators can generate a double-click shortcut without manual shortcut editing.
+- Launcher flow is documented in user-facing guides.

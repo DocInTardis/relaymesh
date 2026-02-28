@@ -50,6 +50,18 @@ Fast preset startup (no default workers, directly build a dual-project topology)
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/agent_hub.ps1 -AutoWorkers 0 -AutoTopology dual
 ```
 
+One-click studio launcher (recommended for desktop-style usage):
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start_studio.ps1
+```
+
+Install desktop shortcut:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install_studio_shortcut.ps1
+```
+
 Session restore behavior (default):
 
 - if no `-Root` is provided, hub auto-resumes last snapshot from `tmp/agent-hub-session.json`

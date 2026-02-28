@@ -200,6 +200,20 @@ Acceptance:
 - control-room registration is isolated for future class-level extraction
 - no behavioral regression observed in automated validation runs
 
+## 3.13 Phase M - Desktop Launcher Baseline
+
+Delivered:
+
+- added `scripts/start_studio.ps1` for one-command RelayMesh Studio startup
+- added `scripts/install_studio_shortcut.ps1` to generate desktop `.lnk` launcher
+- documented launcher usage in system manual and hub quickstart
+
+Acceptance:
+
+- studio launcher works as a direct entry point for terminal-based control room operation
+- shortcut installer can generate a double-click launch target without manual shortcut setup
+- launcher path is documented for operators
+
 ## 4. Next Iteration Backlog
 
 Planned for future autopilot rounds:

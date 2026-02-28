@@ -406,3 +406,46 @@ session show
 - `session` 会持久化 root/namespace/topology/alias/template，便于下次恢复。
 - `session clear` 可清掉自动恢复状态，重新从干净会话启动。
 - 建议把 Hub 作为“操作终端”，把 `/control-room` 作为“监控终端”并排使用。
+
+## 14. 桌面一键启动（Studio Launcher）
+
+如果你想把 RelayMesh 作为“软件入口”来使用，而不是每次手敲命令，可以用下面两个脚本：
+
+1. `scripts/start_studio.ps1`
+作用：一键进入 RelayMesh Studio（本质上启动 `agent_hub.ps1` 的推荐参数组合）。
+
+2. `scripts/install_studio_shortcut.ps1`
+作用：在桌面（或任意路径）创建可双击的 `.lnk` 启动快捷方式。
+
+### 14.1 直接启动（不创建快捷方式）
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start_studio.ps1
+```
+
+默认行为：
+
+- `AutoWorkers=0`
+- `AutoTopology=dual`
+- 默认 Web 入口 `http://127.0.0.1:18080/control-room?token=relay_ro`
+
+### 14.2 创建桌面快捷方式
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install_studio_shortcut.ps1
+```
+
+可选自定义：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install_studio_shortcut.ps1 `
+  -ShortcutPath "$env:USERPROFILE\\Desktop\\RelayMesh Studio.lnk" `
+  -AutoTopology dual `
+  -WebPort 18080 `
+  -MetricsPort 19090
+```
+
+提示：
+
+- `install_studio_shortcut.ps1` 默认优先使用 `wt.exe` 图标；若不可用则回退到 `powershell.exe` 图标。
+- 如果你想验证而不污染桌面，可以先把 `-ShortcutPath` 指向 `tmp/*.lnk`。
