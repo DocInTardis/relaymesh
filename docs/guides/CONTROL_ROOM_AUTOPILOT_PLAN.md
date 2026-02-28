@@ -99,12 +99,14 @@ Delivered:
 - control-room action buttons for `cancel`, `replay`, `replay_batch`
 - dynamic pane count (2..9) with add/remove controls
 - keyboard pane-size controls (`Ctrl++`, `Ctrl+-`)
+- command bar in UI for operator command execution (`Ctrl+Enter`)
 
 Acceptance:
 
 - operators can execute write actions from control-room without leaving page
 - action endpoint enforces namespace auth and write permission
 - pane count changes take effect immediately and persist in layout state
+- command execution path works for `cancel`, `replay`, `replay-batch`, `preset`, `pane`, and `refresh`
 
 ## 4. Next Iteration Backlog
 

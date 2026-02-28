@@ -3294,6 +3294,12 @@ public final class RelayMeshCommand implements Runnable {
                       gap: 8px;
                       margin-top: 8px;
                     }
+                    .commandbar {
+                      display: grid;
+                      grid-template-columns: 5fr 1fr 1fr;
+                      gap: 8px;
+                      margin-top: 8px;
+                    }
                     .hint {
                       margin-top: 8px;
                       color: var(--muted);
@@ -3394,6 +3400,9 @@ public final class RelayMeshCommand implements Runnable {
                       .actions {
                         grid-template-columns: repeat(3, minmax(0, 1fr));
                       }
+                      .commandbar {
+                        grid-template-columns: 1fr;
+                      }
                       .pane-head {
                         grid-template-columns: 120px 1fr 1fr;
                       }
@@ -3409,6 +3418,9 @@ public final class RelayMeshCommand implements Runnable {
                         grid-template-columns: 1fr;
                       }
                       .actions {
+                        grid-template-columns: 1fr;
+                      }
+                      .commandbar {
                         grid-template-columns: 1fr;
                       }
                     }
@@ -3463,8 +3475,13 @@ public final class RelayMeshCommand implements Runnable {
                         <button class="secondary" onclick="clearActionInputs()">Clear Action Inputs</button>
                         <button class="secondary" onclick="clearActionResult()">Clear Action Output</button>
                       </div>
+                      <div class="commandbar">
+                        <input id="commandInput" placeholder="command: cancel <ns> <taskId> [soft|hard] [reason...] | replay <ns> <taskId> | replay-batch <ns> [limit] | pane add|remove | preset <name> | refresh">
+                        <button class="secondary" onclick="runCommandLine()">Run Cmd</button>
+                        <button class="secondary" onclick="showCommandHelp()">Cmd Help</button>
+                      </div>
                       <div class="hint">
-                        Hotkeys: Alt+1..9 focus panel, Tab/Shift+Tab cycle, Ctrl+R refresh, Ctrl+S save layout, Ctrl+L copy link. Shared snapshot feeds every panel.
+                        Hotkeys: Alt+1..9 focus panel, Tab/Shift+Tab cycle, Ctrl+R refresh, Ctrl+S save layout, Ctrl+L copy link, Ctrl++ add pane, Ctrl+- remove pane, Ctrl+Enter run command.
                       </div>
                       <div id="statusLine" class="status mono">booting...</div>
                       <div id="actionResult" class="action-result">action output: ready</div>
@@ -3888,6 +3905,94 @@ public final class RelayMeshCommand implements Runnable {
                       }
                     }
 
+                    async function runControlActionWith(namespace, action, mode = '', taskId = '', reason = '', limit = '') {
+                      const payload = { action, namespace };
+                      if (mode) payload.mode = mode;
+                      if (reason) payload.reason = reason;
+                      if (taskId) payload.taskId = taskId;
+                      if (limit) payload.limit = String(limit);
+                      if (action === 'replay_batch') {
+                        payload.status = 'DEAD_LETTER';
+                      }
+                      const out = await postForm('/api/control-room/action', payload);
+                      setActionResult(JSON.stringify(out, null, 2));
+                      await loadSnapshot();
+                    }
+
+                    function tokenizeCommand(raw) {
+                      if (!raw) return [];
+                      return raw.trim().split(/\s+/).filter(Boolean);
+                    }
+
+                    async function runCommandLine() {
+                      const raw = document.getElementById('commandInput').value.trim();
+                      if (!raw) return;
+                      const parts = tokenizeCommand(raw);
+                      if (parts.length === 0) return;
+                      const cmd = parts[0].toLowerCase();
+                      try {
+                        if (cmd === 'refresh') {
+                          await loadSnapshot();
+                          return;
+                        }
+                        if (cmd === 'preset' && parts.length >= 2) {
+                          const name = parts[1].toLowerCase();
+                          document.getElementById('presetInput').value = name;
+                          applyPreset(name);
+                          await loadSnapshot();
+                          return;
+                        }
+                        if (cmd === 'pane' && parts.length >= 2) {
+                          const op = parts[1].toLowerCase();
+                          if (op === 'add') {
+                            addPane();
+                            return;
+                          }
+                          if (op === 'remove') {
+                            removePane();
+                            return;
+                          }
+                        }
+                        if (cmd === 'cancel' && parts.length >= 3) {
+                          const namespace = parts[1];
+                          const taskId = parts[2];
+                          const mode = parts.length >= 4 ? parts[3] : 'hard';
+                          const reason = parts.length >= 5 ? parts.slice(4).join(' ') : '';
+                          await runControlActionWith(namespace, 'cancel', mode, taskId, reason, '');
+                          return;
+                        }
+                        if (cmd === 'replay' && parts.length >= 3) {
+                          const namespace = parts[1];
+                          const taskId = parts[2];
+                          await runControlActionWith(namespace, 'replay', '', taskId, '', '');
+                          return;
+                        }
+                        if ((cmd === 'replay-batch' || cmd === 'replay_batch') && parts.length >= 2) {
+                          const namespace = parts[1];
+                          const limit = parts.length >= 3 ? Number.parseInt(parts[2], 10) : 50;
+                          await runControlActionWith(namespace, 'replay_batch', '', '', '', Number.isFinite(limit) ? limit : 50);
+                          return;
+                        }
+                        setActionResult('unknown command: ' + raw);
+                      } catch (e) {
+                        setActionResult('command failed: ' + e.message);
+                      }
+                    }
+
+                    function showCommandHelp() {
+                      const lines = [
+                        'commands:',
+                        'refresh',
+                        'preset <ops|incident|throughput|audit>',
+                        'pane add',
+                        'pane remove',
+                        'cancel <namespace> <taskId> [soft|hard] [reason...]',
+                        'replay <namespace> <taskId>',
+                        'replay-batch <namespace> [limit]'
+                      ];
+                      setActionResult(lines.join('\\n'));
+                    }
+
                     function manualRefresh() {
                       loadSnapshot().catch(err => {
                         setStatusLine('snapshot failed: ' + err.message);
@@ -4155,6 +4260,11 @@ public final class RelayMeshCommand implements Runnable {
                         if (ev.ctrlKey && ev.key === '-') {
                           ev.preventDefault();
                           removePane();
+                          return;
+                        }
+                        if (ev.ctrlKey && ev.key === 'Enter') {
+                          ev.preventDefault();
+                          runCommandLine();
                         }
                       });
                     }
@@ -4208,6 +4318,12 @@ public final class RelayMeshCommand implements Runnable {
                       document.getElementById('transportInput').addEventListener('change', triggerRefresh);
                       document.getElementById('presetInput').addEventListener('change', persistLayoutSoon);
                       document.getElementById('actionNamespaceInput').addEventListener('change', persistLayoutSoon);
+                      document.getElementById('commandInput').addEventListener('keydown', ev => {
+                        if (ev.key === 'Enter') {
+                          ev.preventDefault();
+                          runCommandLine();
+                        }
+                      });
                     }
 
                     async function bootstrap() {

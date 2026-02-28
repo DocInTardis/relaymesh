@@ -48,7 +48,7 @@ Reason: CLI methods are a thin map of capabilities exposed by `RelayMeshRuntime`
    - auth and principal checks (`authorize*`)
    - namespace resolution/discovery helpers
    - control-room snapshot builder and stream payload builder
-   - `controlRoomHtml()` frontend script (hotkeys + presets + localStorage layout)
+   - `controlRoomHtml()` frontend script (hotkeys + presets + localStorage layout + command bar)
 3. Map each view type back to runtime calls:
    - tasks/dead -> `runtime.tasks(...)`
    - conflicts -> `runtime.leaseConflicts(...)`

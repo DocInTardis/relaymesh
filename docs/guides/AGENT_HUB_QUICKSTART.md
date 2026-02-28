@@ -40,6 +40,7 @@ Control Room enhancements:
 - apply preset layouts (`ops` / `incident` / `throughput` / `audit`)
 - add/remove panes for monitor-wall style views (`Ctrl++` / `Ctrl+-`)
 - execute control actions directly from web UI (`cancel` / `replay` / `replay_batch`)
+- use built-in command bar for operator commands (`Ctrl+Enter`)
 
 Fast preset startup (no default workers, directly build a dual-project topology):
 
