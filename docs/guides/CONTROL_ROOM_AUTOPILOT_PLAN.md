@@ -169,6 +169,23 @@ Acceptance:
 - compile and test suite pass after helper migration
 - control-room runtime support logic is reusable and directly testable
 
+## 3.11 Phase K - API Smoke Coverage
+
+Delivered:
+
+- added `scripts/control_room_api_smoke.ps1` for control-room API integration smoke checks
+- smoke flow covers:
+  - control-room page + snapshot read paths
+  - command bridge read path and write permission denial for RO token
+  - profile list/save/get/delete paths
+  - action endpoint write permission behavior for RO vs RW token
+
+Acceptance:
+
+- script runs end-to-end and reports success on healthy local environment
+- control-room auth boundaries are validated through script assertions
+- operators can run one command to verify core control-room APIs
+
 ## 4. Next Iteration Backlog
 
 Planned for future autopilot rounds:

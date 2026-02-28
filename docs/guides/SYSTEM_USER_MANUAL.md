@@ -350,6 +350,22 @@ topology down all
 worker stop all
 ```
 
+## 11.4 如何快速验证 Control Room API 没有回归？
+
+在仓库根目录执行：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/control_room_api_smoke.ps1
+```
+
+脚本会自动完成：
+
+- 初始化临时 root
+- 启动带 token 的 `serve-web`
+- 校验 control-room 核心 API（snapshot/command/action/layout profiles）
+- 校验只读/读写 token 的权限边界
+- 自动停止服务并输出结果 JSON
+
 ## 12. 推荐阅读顺序
 
 1. `README.md`

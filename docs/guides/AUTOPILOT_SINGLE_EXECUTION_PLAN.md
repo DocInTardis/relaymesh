@@ -29,7 +29,7 @@ After one-click startup, operators can:
 - [x] Phase A-H: Control-room feature delivery (APIs, UI, SSE, command bridge, profile persistence).
 - [x] Phase I: Maintainability refactor round 1 (page resource extraction, parser/store extraction).
 - [x] Phase J: Maintainability refactor round 2 (namespace/snapshot/workflow helpers extraction).
-- [ ] Phase K: Control-room API integration test coverage expansion.
+- [x] Phase K: Control-room API integration test coverage expansion.
 - [ ] Phase L: serve-web route registration modularization.
 - [ ] Phase M: desktop shell and packaging path.
 
@@ -55,3 +55,20 @@ After one-click startup, operators can:
 - 2026-02-28: extracted `ControlRoomRuntimeSupport` and migrated namespace/snapshot/workflow helper call sites.
 - 2026-02-28: added `ControlRoomRuntimeSupportTest` and passed compile + full test run.
 - 2026-02-28: committed and pushed Phase J as `b4bf325` to `origin/main`.
+- 2026-02-28: executed `scripts/control_room_api_smoke.ps1` and validated key control-room API paths (all checks passed).
+
+## 6. Current Execution Batch (Phase K)
+
+### 6.1 Tasks
+
+- [x] K1: Add control-room API smoke script to cover read/write endpoints.
+- [x] K2: Cover profile APIs (list/save/get/delete) in smoke flow.
+- [x] K3: Cover command/action auth behavior (ro denied, rw allowed) in smoke flow.
+- [x] K4: Execute script and verify all checks pass.
+- [ ] K5: Commit and push to `origin/main`.
+
+### 6.2 Acceptance
+
+- Control-room key APIs are validated by a reproducible script.
+- Script verifies both success and permission-denied paths.
+- Script can be run by operators without modifying source code.
