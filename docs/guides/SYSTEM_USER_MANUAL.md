@@ -207,18 +207,25 @@ Control Room 默认提供 4 个面板，并且由同一次后端快照统一驱�
 - 给每个面板独立选择 `namespace`
 - 切换视图类型：`tasks` / `dead` / `conflicts` / `members` / `stats`
 - 对任务面板设置 `status` 与 `limit`
-- 修改自动刷新间隔（1-60 秒）
+- 修改刷新间隔（1-60 秒）
+- 选择数据传输模式：`sse`（实时流）或 `poll`（轮询）
+- 一键应用预设布局（`ops` / `incident` / `throughput` / `audit`）
+- 保存/清空本地布局（浏览器 `localStorage`）
+- 复制分享链接（不包含 token）
 
 快捷键：
 
 - `Alt+1..9`：聚焦指定面板
 - `Tab` / `Shift+Tab`：按顺序切换面板焦点
 - `Ctrl+R`：立即刷新快照
+- `Ctrl+S`：保存当前布局
+- `Ctrl+L`：复制分享链接
 
 相关 API（调试时可直接调用）：
 
 - `GET /api/namespaces`
 - `GET /api/control-room/snapshot?namespaces=all&taskLimit=30&deadLimit=30&conflictLimit=20`
+- `GET /events/control-room?namespaces=all&intervalMs=3000`（SSE）
 
 ## 7.3 启动 Metrics
 

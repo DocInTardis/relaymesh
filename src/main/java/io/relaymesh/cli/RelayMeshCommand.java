@@ -1183,24 +1183,83 @@ public final class RelayMeshCommand implements Runnable {
                         return;
                     }
                 }
-                LinkedHashMap<String, Object> data = new LinkedHashMap<>();
-                for (String ns : requested) {
-                    RelayMeshRuntime scoped = runtimeForNamespace(parent.root, ns, namespaceRuntimeCache);
-                    LinkedHashMap<String, Object> snap = new LinkedHashMap<>();
-                    snap.put("stats", scoped.stats());
-                    snap.put("members", scoped.members());
-                    snap.put("tasks", scoped.tasks(statusFilter, snapshotTaskLimit, 0));
-                    snap.put("dead", scoped.tasks("DEAD_LETTER", snapshotDeadLimit, 0));
-                    snap.put("conflicts", scoped.leaseConflicts(snapshotConflictLimit, snapshotSinceHours));
-                    data.put(ns, snap);
-                }
-                LinkedHashMap<String, Object> payload = new LinkedHashMap<>();
-                payload.put("timestamp", Instant.now().toString());
-                payload.put("activeNamespace", defaultNamespace);
-                payload.put("requestedNamespaces", requested);
-                payload.put("statusFilter", statusFilter == null ? "" : statusFilter);
-                payload.put("data", data);
+                LinkedHashMap<String, Object> payload = buildControlRoomSnapshotPayload(
+                        parent.root,
+                        defaultNamespace,
+                        namespaceRuntimeCache,
+                        requested,
+                        statusFilter,
+                        snapshotTaskLimit,
+                        snapshotDeadLimit,
+                        snapshotConflictLimit,
+                        snapshotSinceHours
+                );
                 writeJson(exchange, payload, 200);
+            });
+            server.createContext("/events/control-room", exchange -> {
+                Map<String, String> q = parseParams(exchange);
+                AuthPrincipal principal = authorizePrincipal(exchange, q, auth, false);
+                if (principal == null) return;
+                int snapshotTaskLimit = clamp(parseIntOrDefault(q.get("taskLimit"), taskLimit), 1, 200);
+                int snapshotDeadLimit = clamp(parseIntOrDefault(q.get("deadLimit"), deadLimit), 1, 200);
+                int snapshotConflictLimit = clamp(parseIntOrDefault(q.get("conflictLimit"), 20), 1, 200);
+                int snapshotSinceHours = clamp(parseIntOrDefault(q.get("sinceHours"), 24), 1, 24 * 30);
+                int intervalMs = clamp(parseIntOrDefault(q.get("intervalMs"), 3000), 1000, 30000);
+                String statusFilter = q.get("status");
+                List<String> discovered = discoverNamespaces(rootBaseDir, defaultNamespace);
+                List<String> requested = resolveRequestedNamespaces(
+                        q.get("namespaces"),
+                        q.get("ns"),
+                        defaultNamespace,
+                        discovered
+                );
+                if (requested.isEmpty()) {
+                    requested = List.of(defaultNamespace);
+                }
+                for (String requestedNamespace : requested) {
+                    if (!discovered.contains(requestedNamespace)) {
+                        writeJson(
+                                exchange,
+                                Map.of("error", "namespace_not_found", "namespace", requestedNamespace),
+                                404
+                        );
+                        return;
+                    }
+                    if (!principalCanAccessNamespace(principal, requestedNamespace)) {
+                        writeJson(
+                                exchange,
+                                Map.of("error", "forbidden_namespace", "namespace", requestedNamespace),
+                                403
+                        );
+                        return;
+                    }
+                }
+                exchange.getResponseHeaders().set("Content-Type", "text/event-stream; charset=utf-8");
+                exchange.getResponseHeaders().set("Cache-Control", "no-cache");
+                exchange.getResponseHeaders().set("Connection", "keep-alive");
+                exchange.sendResponseHeaders(200, 0);
+                try (OutputStream os = exchange.getResponseBody()) {
+                    while (true) {
+                        LinkedHashMap<String, Object> payload = buildControlRoomSnapshotPayload(
+                                parent.root,
+                                defaultNamespace,
+                                namespaceRuntimeCache,
+                                requested,
+                                statusFilter,
+                                snapshotTaskLimit,
+                                snapshotDeadLimit,
+                                snapshotConflictLimit,
+                                snapshotSinceHours
+                        );
+                        String data = Jsons.toJson(payload).replace("\r", " ").replace("\n", " ");
+                        String frame = "event: control_snapshot\ndata: " + data + "\n\n";
+                        os.write(frame.getBytes(StandardCharsets.UTF_8));
+                        os.flush();
+                        Thread.sleep(intervalMs);
+                    }
+                } catch (Exception ignored) {
+                    // Client disconnected or stream interrupted.
+                }
             });
             server.createContext("/api/tasks", exchange -> {
                 Map<String, String> q = parseParams(exchange);
@@ -2707,6 +2766,37 @@ public final class RelayMeshCommand implements Runnable {
         return principal.allowedNamespaces().contains(normalized);
     }
 
+    private static LinkedHashMap<String, Object> buildControlRoomSnapshotPayload(
+            String root,
+            String defaultNamespace,
+            ConcurrentMap<String, RelayMeshRuntime> runtimeCache,
+            List<String> requestedNamespaces,
+            String statusFilter,
+            int taskLimit,
+            int deadLimit,
+            int conflictLimit,
+            int sinceHours
+    ) {
+        LinkedHashMap<String, Object> data = new LinkedHashMap<>();
+        for (String ns : requestedNamespaces) {
+            RelayMeshRuntime scoped = runtimeForNamespace(root, ns, runtimeCache);
+            LinkedHashMap<String, Object> snap = new LinkedHashMap<>();
+            snap.put("stats", scoped.stats());
+            snap.put("members", scoped.members());
+            snap.put("tasks", scoped.tasks(statusFilter, taskLimit, 0));
+            snap.put("dead", scoped.tasks("DEAD_LETTER", deadLimit, 0));
+            snap.put("conflicts", scoped.leaseConflicts(conflictLimit, sinceHours));
+            data.put(ns, snap);
+        }
+        LinkedHashMap<String, Object> payload = new LinkedHashMap<>();
+        payload.put("timestamp", Instant.now().toString());
+        payload.put("activeNamespace", defaultNamespace);
+        payload.put("requestedNamespaces", requestedNamespaces);
+        payload.put("statusFilter", statusFilter == null ? "" : statusFilter);
+        payload.put("data", data);
+        return payload;
+    }
+
     private static List<String> resolveSeedEndpoints(List<String> cliSeeds, String seedsFile) {
         Set<String> unique = new LinkedHashSet<>();
         if (cliSeeds != null) {
@@ -3067,6 +3157,7 @@ public final class RelayMeshCommand implements Runnable {
                       --panel: rgba(248, 250, 252, 0.95);
                       --accent: #0f766e;
                       --accent2: #0369a1;
+                      --warning: #b45309;
                       --active: #fef3c7;
                       --active-line: #f59e0b;
                     }
@@ -3108,8 +3199,14 @@ public final class RelayMeshCommand implements Runnable {
                     }
                     .controls {
                       display: grid;
+                      grid-template-columns: repeat(10, minmax(0, 1fr));
+                      gap: 8px;
+                    }
+                    .ops {
+                      display: grid;
                       grid-template-columns: repeat(6, minmax(0, 1fr));
                       gap: 8px;
+                      margin-top: 8px;
                     }
                     .hint {
                       margin-top: 8px;
@@ -3134,6 +3231,10 @@ public final class RelayMeshCommand implements Runnable {
                     .secondary {
                       background: #0f172a;
                       border-color: #0f172a;
+                    }
+                    .warning {
+                      background: var(--warning);
+                      border-color: var(--warning);
                     }
                     .status {
                       margin-top: 8px;
@@ -3186,6 +3287,9 @@ public final class RelayMeshCommand implements Runnable {
                     }
                     @media (max-width: 1200px) {
                       .controls {
+                        grid-template-columns: repeat(5, minmax(0, 1fr));
+                      }
+                      .ops {
                         grid-template-columns: repeat(3, minmax(0, 1fr));
                       }
                       .pane-head {
@@ -3197,6 +3301,9 @@ public final class RelayMeshCommand implements Runnable {
                         grid-template-columns: 1fr;
                       }
                       .controls {
+                        grid-template-columns: 1fr;
+                      }
+                      .ops {
                         grid-template-columns: 1fr;
                       }
                     }
@@ -3214,28 +3321,85 @@ public final class RelayMeshCommand implements Runnable {
                         <input id="namespacesInput" placeholder="namespaces: all or default,project-a">
                         <input id="statusFilterInput" placeholder="task status filter (optional)">
                         <input id="refreshSecInput" type="number" min="1" max="60" value="5" placeholder="refresh sec">
+                        <select id="transportInput">
+                          <option value="sse">transport: sse</option>
+                          <option value="poll">transport: poll</option>
+                        </select>
+                        <select id="presetInput">
+                          <option value="">preset (optional)</option>
+                          <option value="ops">ops</option>
+                          <option value="incident">incident</option>
+                          <option value="throughput">throughput</option>
+                          <option value="audit">audit</option>
+                        </select>
                         <button onclick="manualRefresh()">Refresh Now</button>
+                        <button onclick="applySelectedPreset()">Apply Preset</button>
+                        <button onclick="saveLayoutToStorage()">Save Layout</button>
+                        <button class="warning" onclick="clearStoredLayout()">Clear Layout</button>
+                      </div>
+                      <div class="ops">
+                        <button class="secondary" onclick="copyShareLink()">Copy Share Link</button>
                         <button class="secondary" onclick="window.location.href='/'">Open Classic Console</button>
+                        <button class="secondary" onclick="window.open('/?token=' + encodeURIComponent(authToken()), '_blank')">Classic In New Tab</button>
+                        <button class="secondary" onclick="openApiNamespaces()">Open /api/namespaces</button>
+                        <button class="secondary" onclick="openApiSnapshot()">Open Snapshot API</button>
+                        <button class="secondary" onclick="toggleFullscreen()">Toggle Fullscreen</button>
                       </div>
                       <div class="hint">
-                        Hotkeys: Alt+1..9 focus panel, Tab/Shift+Tab cycle, Ctrl+R refresh. Shared snapshot feeds every panel.
+                        Hotkeys: Alt+1..9 focus panel, Tab/Shift+Tab cycle, Ctrl+R refresh, Ctrl+S save layout, Ctrl+L copy link. Shared snapshot feeds every panel.
                       </div>
                       <div id="statusLine" class="status mono">booting...</div>
                     </div>
                     <section id="paneGrid" class="grid"></section>
                   </div>
                   <script>
-                    const state = {
-                      namespaces: [],
-                      snapshot: null,
-                      activePane: 0,
-                      timer: null,
-                      panes: [
+                    const STORAGE_KEY = 'relaymesh.control-room.layout.v2';
+                    const PRESETS = {
+                      ops: [
+                        { namespace: 'default', view: 'tasks', limit: 20, status: '' },
+                        { namespace: 'default', view: 'dead', limit: 20, status: '' },
+                        { namespace: 'default', view: 'conflicts', limit: 20, status: '' },
+                        { namespace: 'default', view: 'stats', limit: 1, status: '' }
+                      ],
+                      incident: [
+                        { namespace: 'default', view: 'tasks', limit: 30, status: 'RETRYING' },
+                        { namespace: 'default', view: 'dead', limit: 30, status: '' },
+                        { namespace: 'default', view: 'conflicts', limit: 30, status: '' },
+                        { namespace: 'default', view: 'members', limit: 1, status: '' }
+                      ],
+                      throughput: [
+                        { namespace: 'default', view: 'tasks', limit: 40, status: 'RUNNING' },
+                        { namespace: 'default', view: 'tasks', limit: 40, status: 'SUCCESS' },
+                        { namespace: 'default', view: 'tasks', limit: 40, status: 'PENDING' },
+                        { namespace: 'default', view: 'stats', limit: 1, status: '' }
+                      ],
+                      audit: [
+                        { namespace: 'default', view: 'dead', limit: 30, status: '' },
+                        { namespace: 'default', view: 'conflicts', limit: 30, status: '' },
+                        { namespace: 'default', view: 'members', limit: 1, status: '' },
+                        { namespace: 'default', view: 'stats', limit: 1, status: '' }
+                      ]
+                    };
+
+                    function defaultPanes() {
+                      return [
                         { index: 1, namespace: 'default', view: 'tasks', limit: 12, status: '' },
                         { index: 2, namespace: 'default', view: 'dead', limit: 12, status: '' },
                         { index: 3, namespace: 'default', view: 'conflicts', limit: 20, status: '' },
                         { index: 4, namespace: 'default', view: 'stats', limit: 1, status: '' }
-                      ]
+                      ];
+                    }
+
+                    const state = {
+                      namespaces: [],
+                      snapshot: null,
+                      activePane: 0,
+                      pollTimer: null,
+                      stream: null,
+                      persistTimer: null,
+                      panes: defaultPanes(),
+                      pendingLayout: null,
+                      pendingPreset: ''
                     };
 
                     function authToken() {
@@ -3257,6 +3421,32 @@ public final class RelayMeshCommand implements Runnable {
                       return r.json();
                     }
 
+                    function paneCount() {
+                      return 4;
+                    }
+
+                    function ensurePaneShape(raw) {
+                      const views = new Set(['tasks', 'dead', 'conflicts', 'members', 'stats']);
+                      const source = Array.isArray(raw) ? raw : [];
+                      const out = [];
+                      for (let i = 0; i < paneCount(); i++) {
+                        const src = source[i] || {};
+                        const view = typeof src.view === 'string' && views.has(src.view) ? src.view : 'tasks';
+                        const namespace = typeof src.namespace === 'string' && src.namespace.trim() ? src.namespace.trim() : 'default';
+                        const status = typeof src.status === 'string' ? src.status.trim() : '';
+                        const limitRaw = Number.parseInt(String(src.limit || ''), 10);
+                        const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(200, limitRaw)) : 20;
+                        out.push({
+                          index: i + 1,
+                          namespace,
+                          view,
+                          limit,
+                          status
+                        });
+                      }
+                      return out;
+                    }
+
                     function paneNamespaceOptions(selected) {
                       const values = state.namespaces.length > 0 ? state.namespaces : ['default'];
                       return values.map(ns => {
@@ -3273,6 +3463,15 @@ public final class RelayMeshCommand implements Runnable {
                       }).join('');
                     }
 
+                    function reconcilePaneNamespaces() {
+                      const fallback = state.namespaces.length > 0 ? state.namespaces[0] : 'default';
+                      for (const pane of state.panes) {
+                        if (!state.namespaces.includes(pane.namespace)) {
+                          pane.namespace = fallback;
+                        }
+                      }
+                    }
+
                     function renderPaneShells() {
                       const grid = document.getElementById('paneGrid');
                       grid.innerHTML = '';
@@ -3282,7 +3481,7 @@ public final class RelayMeshCommand implements Runnable {
                         pane.dataset.index = String(cfg.index - 1);
                         pane.innerHTML = `
                           <div class="pane-head">
-                            <div class="pane-title">Pane ${cfg.index}</div>
+                            <div class="pane-title">Pane ${cfg.index} (Alt+${cfg.index})</div>
                             <select class="nsSelect">${paneNamespaceOptions(cfg.namespace)}</select>
                             <select class="viewSelect">${paneViewOptions(cfg.view)}</select>
                             <input class="limitInput" type="number" min="1" max="200" value="${cfg.limit}">
@@ -3307,20 +3506,24 @@ public final class RelayMeshCommand implements Runnable {
                         nsSel.addEventListener('change', () => {
                           state.panes[idx].namespace = nsSel.value;
                           renderPaneData(idx);
+                          persistLayoutSoon();
                         });
                         viewSel.addEventListener('change', () => {
                           state.panes[idx].view = viewSel.value;
                           renderPaneData(idx);
+                          persistLayoutSoon();
                         });
                         limitInput.addEventListener('change', () => {
                           const next = Number.parseInt(limitInput.value, 10);
                           state.panes[idx].limit = Number.isFinite(next) ? Math.max(1, Math.min(200, next)) : 20;
                           limitInput.value = String(state.panes[idx].limit);
                           renderPaneData(idx);
+                          persistLayoutSoon();
                         });
                         statusInput.addEventListener('change', () => {
                           state.panes[idx].status = statusInput.value.trim();
                           renderPaneData(idx);
+                          persistLayoutSoon();
                         });
                       });
                     }
@@ -3334,6 +3537,7 @@ public final class RelayMeshCommand implements Runnable {
                         if (idx === normalized) pane.classList.add('active');
                         else pane.classList.remove('active');
                       });
+                      persistLayoutSoon();
                     }
 
                     function selectedNamespacesQuery() {
@@ -3372,11 +3576,7 @@ public final class RelayMeshCommand implements Runnable {
                       if (!document.getElementById('namespacesInput').value.trim()) {
                         document.getElementById('namespacesInput').value = state.namespaces.join(',');
                       }
-                      for (const pane of state.panes) {
-                        if (!state.namespaces.includes(pane.namespace)) {
-                          pane.namespace = active;
-                        }
-                      }
+                      reconcilePaneNamespaces();
                       renderPaneShells();
                     }
 
@@ -3384,7 +3584,14 @@ public final class RelayMeshCommand implements Runnable {
                       document.getElementById('statusLine').textContent = msg;
                     }
 
-                    async function loadSnapshot() {
+                    function maxPollIntervalSec() {
+                      const secRaw = Number.parseInt(document.getElementById('refreshSecInput').value, 10);
+                      const sec = Number.isFinite(secRaw) ? Math.max(1, Math.min(60, secRaw)) : 5;
+                      document.getElementById('refreshSecInput').value = String(sec);
+                      return sec;
+                    }
+
+                    function buildSnapshotParams(includeInterval) {
                       const qp = new URLSearchParams();
                       qp.set('namespaces', selectedNamespacesQuery());
                       qp.set('taskLimit', String(maxPaneLimit('task')));
@@ -3392,10 +3599,24 @@ public final class RelayMeshCommand implements Runnable {
                       qp.set('conflictLimit', String(maxPaneLimit('conflicts')));
                       const status = globalStatusFilter();
                       if (status) qp.set('status', status);
-                      const body = await fetchJson('/api/control-room/snapshot?' + qp.toString());
+                      if (includeInterval) {
+                        qp.set('intervalMs', String(maxPollIntervalSec() * 1000));
+                      }
+                      return qp;
+                    }
+
+                    function updateSnapshot(body, source) {
                       state.snapshot = body;
                       renderAllPaneData();
-                      setStatusLine('snapshot ok @ ' + (body.timestamp || new Date().toISOString()) + ' namespaces=' + (body.requestedNamespaces || []).join(','));
+                      const names = (body.requestedNamespaces || []).join(',');
+                      const ts = body.timestamp || new Date().toISOString();
+                      setStatusLine(source + ' ok @ ' + ts + ' namespaces=' + names + ' mode=' + currentTransport());
+                    }
+
+                    async function loadSnapshot() {
+                      const qp = buildSnapshotParams(false);
+                      const body = await fetchJson('/api/control-room/snapshot?' + qp.toString());
+                      updateSnapshot(body, 'snapshot');
                     }
 
                     function safeArray(value) {
@@ -3465,16 +3686,186 @@ public final class RelayMeshCommand implements Runnable {
                       });
                     }
 
-                    function rearmAutoRefresh() {
-                      if (state.timer) clearInterval(state.timer);
-                      const secRaw = Number.parseInt(document.getElementById('refreshSecInput').value, 10);
-                      const sec = Number.isFinite(secRaw) ? Math.max(1, Math.min(60, secRaw)) : 5;
-                      document.getElementById('refreshSecInput').value = String(sec);
-                      state.timer = setInterval(() => {
+                    function stopRealtime() {
+                      if (state.pollTimer) {
+                        clearInterval(state.pollTimer);
+                        state.pollTimer = null;
+                      }
+                      if (state.stream) {
+                        state.stream.close();
+                        state.stream = null;
+                      }
+                    }
+
+                    function rearmPolling() {
+                      stopRealtime();
+                      const sec = maxPollIntervalSec();
+                      state.pollTimer = setInterval(() => {
                         loadSnapshot().catch(err => {
                           setStatusLine('snapshot failed: ' + err.message);
                         });
                       }, sec * 1000);
+                    }
+
+                    function connectControlStream() {
+                      stopRealtime();
+                      const params = buildSnapshotParams(true);
+                      const es = new EventSource(withAuth('/events/control-room?' + params.toString()));
+                      state.stream = es;
+                      es.onopen = () => {
+                        setStatusLine('stream connected');
+                      };
+                      es.onerror = () => {
+                        setStatusLine('stream reconnecting...');
+                      };
+                      es.addEventListener('control_snapshot', ev => {
+                        try {
+                          const payload = JSON.parse(ev.data);
+                          updateSnapshot(payload, 'stream');
+                        } catch (e) {
+                          setStatusLine('stream parse failed: ' + e.message);
+                        }
+                      });
+                    }
+
+                    function currentTransport() {
+                      const value = document.getElementById('transportInput').value;
+                      return value === 'poll' ? 'poll' : 'sse';
+                    }
+
+                    function applyTransport() {
+                      if (currentTransport() === 'poll') {
+                        rearmPolling();
+                        return;
+                      }
+                      connectControlStream();
+                    }
+
+                    function exportLayoutState() {
+                      return {
+                        panes: state.panes.map(p => ({
+                          namespace: p.namespace,
+                          view: p.view,
+                          limit: p.limit,
+                          status: p.status || ''
+                        })),
+                        namespaces: document.getElementById('namespacesInput').value.trim(),
+                        statusFilter: document.getElementById('statusFilterInput').value.trim(),
+                        refreshSec: maxPollIntervalSec(),
+                        transport: currentTransport(),
+                        preset: document.getElementById('presetInput').value || '',
+                        activePane: state.activePane
+                      };
+                    }
+
+                    function applyLayout(layout) {
+                      if (!layout || typeof layout !== 'object') return;
+                      if (typeof layout.namespaces === 'string') {
+                        document.getElementById('namespacesInput').value = layout.namespaces;
+                      }
+                      if (typeof layout.statusFilter === 'string') {
+                        document.getElementById('statusFilterInput').value = layout.statusFilter;
+                      }
+                      if (layout.refreshSec != null) {
+                        document.getElementById('refreshSecInput').value = String(layout.refreshSec);
+                      }
+                      if (layout.transport === 'poll' || layout.transport === 'sse') {
+                        document.getElementById('transportInput').value = layout.transport;
+                      }
+                      if (typeof layout.preset === 'string') {
+                        document.getElementById('presetInput').value = layout.preset;
+                      }
+                      state.panes = ensurePaneShape(layout.panes);
+                      state.activePane = Number.isFinite(layout.activePane) ? Math.max(0, Math.min(paneCount() - 1, layout.activePane)) : 0;
+                    }
+
+                    function saveLayoutToStorage() {
+                      try {
+                        const payload = exportLayoutState();
+                        localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+                        setStatusLine('layout saved');
+                      } catch (e) {
+                        setStatusLine('save layout failed: ' + e.message);
+                      }
+                    }
+
+                    function persistLayoutSoon() {
+                      if (state.persistTimer) {
+                        clearTimeout(state.persistTimer);
+                      }
+                      state.persistTimer = setTimeout(() => {
+                        saveLayoutToStorage();
+                        state.persistTimer = null;
+                      }, 350);
+                    }
+
+                    function loadLayoutFromStorage() {
+                      try {
+                        const raw = localStorage.getItem(STORAGE_KEY);
+                        if (!raw) return null;
+                        return JSON.parse(raw);
+                      } catch (e) {
+                        return null;
+                      }
+                    }
+
+                    function clearStoredLayout() {
+                      try {
+                        localStorage.removeItem(STORAGE_KEY);
+                        setStatusLine('stored layout cleared');
+                      } catch (e) {
+                        setStatusLine('clear layout failed: ' + e.message);
+                      }
+                    }
+
+                    function applyPreset(name) {
+                      const preset = PRESETS[name];
+                      if (!preset) return;
+                      const fallbackNs = state.namespaces.length > 0 ? state.namespaces[0] : 'default';
+                      const hydrated = preset.map((pane, idx) => ({
+                        index: idx + 1,
+                        namespace: state.namespaces.includes(pane.namespace) ? pane.namespace : fallbackNs,
+                        view: pane.view,
+                        limit: pane.limit,
+                        status: pane.status || ''
+                      }));
+                      state.panes = ensurePaneShape(hydrated);
+                      renderPaneShells();
+                      renderAllPaneData();
+                      persistLayoutSoon();
+                    }
+
+                    function applySelectedPreset() {
+                      const name = document.getElementById('presetInput').value;
+                      if (!name) return;
+                      applyPreset(name);
+                      manualRefresh();
+                    }
+
+                    function copyShareLink() {
+                      const qp = new URLSearchParams();
+                      qp.set('layout', JSON.stringify(exportLayoutState()));
+                      const link = window.location.origin + window.location.pathname + '?' + qp.toString();
+                      navigator.clipboard.writeText(link)
+                        .then(() => setStatusLine('share link copied'))
+                        .catch(err => setStatusLine('copy link failed: ' + err.message));
+                    }
+
+                    function openApiNamespaces() {
+                      window.open(withAuth('/api/namespaces'), '_blank');
+                    }
+
+                    function openApiSnapshot() {
+                      const qp = buildSnapshotParams(false);
+                      window.open(withAuth('/api/control-room/snapshot?' + qp.toString()), '_blank');
+                    }
+
+                    function toggleFullscreen() {
+                      if (!document.fullscreenElement) {
+                        document.documentElement.requestFullscreen().catch(() => {});
+                        return;
+                      }
+                      document.exitFullscreen().catch(() => {});
                     }
 
                     function bindGlobalKeys() {
@@ -3496,6 +3887,16 @@ public final class RelayMeshCommand implements Runnable {
                         if (ev.ctrlKey && (ev.key === 'r' || ev.key === 'R')) {
                           ev.preventDefault();
                           manualRefresh();
+                          return;
+                        }
+                        if (ev.ctrlKey && (ev.key === 's' || ev.key === 'S')) {
+                          ev.preventDefault();
+                          saveLayoutToStorage();
+                          return;
+                        }
+                        if (ev.ctrlKey && (ev.key === 'l' || ev.key === 'L')) {
+                          ev.preventDefault();
+                          copyShareLink();
                         }
                       });
                     }
@@ -3510,20 +3911,72 @@ public final class RelayMeshCommand implements Runnable {
                       if (namespaces) {
                         document.getElementById('namespacesInput').value = namespaces;
                       }
+                      const transport = qp.get('transport') || '';
+                      if (transport === 'poll' || transport === 'sse') {
+                        document.getElementById('transportInput').value = transport;
+                      }
+                      const refreshSec = qp.get('refreshSec') || '';
+                      if (refreshSec) {
+                        document.getElementById('refreshSecInput').value = refreshSec;
+                      }
+                      const preset = qp.get('preset') || '';
+                      if (preset) {
+                        state.pendingPreset = preset;
+                        document.getElementById('presetInput').value = preset;
+                      }
+                      const layout = qp.get('layout') || '';
+                      if (layout) {
+                        try {
+                          state.pendingLayout = JSON.parse(layout);
+                        } catch (e) {
+                          setStatusLine('query layout parse failed');
+                        }
+                      }
+                    }
+
+                    function bindTopControls() {
+                      const triggerRefresh = () => {
+                        persistLayoutSoon();
+                        manualRefresh();
+                        applyTransport();
+                      };
+                      document.getElementById('namespacesInput').addEventListener('change', triggerRefresh);
+                      document.getElementById('statusFilterInput').addEventListener('change', triggerRefresh);
+                      document.getElementById('refreshSecInput').addEventListener('change', triggerRefresh);
+                      document.getElementById('transportInput').addEventListener('change', triggerRefresh);
+                      document.getElementById('presetInput').addEventListener('change', persistLayoutSoon);
                     }
 
                     async function bootstrap() {
                       initFromQuery();
                       bindGlobalKeys();
-                      document.getElementById('refreshSecInput').addEventListener('change', rearmAutoRefresh);
+                      bindTopControls();
                       document.getElementById('tokenInput').addEventListener('change', () => {
+                        stopRealtime();
                         loadNamespaces()
-                          .then(loadSnapshot)
+                          .then(() => {
+                            renderPaneShells();
+                            return loadSnapshot();
+                          })
+                          .then(applyTransport)
                           .catch(err => setStatusLine('reload failed: ' + err.message));
                       });
                       await loadNamespaces();
+                      const stored = state.pendingLayout == null ? loadLayoutFromStorage() : null;
+                      if (state.pendingLayout != null) {
+                        applyLayout(state.pendingLayout);
+                      } else if (stored) {
+                        applyLayout(stored);
+                      } else {
+                        state.panes = ensurePaneShape(state.panes);
+                      }
+                      if (state.pendingPreset) {
+                        applyPreset(state.pendingPreset);
+                      }
+                      reconcilePaneNamespaces();
+                      renderPaneShells();
                       await loadSnapshot();
-                      rearmAutoRefresh();
+                      applyTransport();
                     }
 
                     bootstrap().catch(err => {

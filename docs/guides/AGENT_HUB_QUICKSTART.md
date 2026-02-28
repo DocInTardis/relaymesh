@@ -33,6 +33,12 @@ Control Room URL (same auth token rules as classic web console):
 
 - `http://127.0.0.1:18080/control-room?token=relay_ro`
 
+Control Room enhancements:
+
+- switch transport mode between `sse` (live stream) and `poll`
+- save and restore pane layouts in browser local storage
+- apply preset layouts (`ops` / `incident` / `throughput` / `audit`)
+
 Fast preset startup (no default workers, directly build a dual-project topology):
 
 ```powershell
