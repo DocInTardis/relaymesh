@@ -138,6 +138,22 @@ Acceptance:
 - profile APIs are auth-aware (read vs write permission)
 - UI can switch between saved profiles without leaving control-room
 
+## 3.9 Phase I - Maintainability Refactor
+
+Delivered:
+
+- extracted control-room frontend page to `src/main/resources/web/control-room.html`
+- added `ControlRoomPage` loader class for embedded static asset loading
+- extracted command parser helpers to `ControlRoomCommandParser`
+- extracted profile persistence helpers to `ControlRoomLayoutStore`
+- added focused tests for page loading, parser behavior, and layout store round-trip
+
+Acceptance:
+
+- `RelayMeshCommand.java` reduced in size without route/behavior changes
+- control-room APIs and UI entry still compile and run through existing tests
+- control-room support logic is independently testable in dedicated classes
+
 ## 4. Next Iteration Backlog
 
 Planned for future autopilot rounds:
