@@ -45,11 +45,13 @@ Reason: CLI methods are a thin map of capabilities exposed by `RelayMeshRuntime`
    - route registration for `/api/control-room/action`
    - route registration for `/api/control-room/workflow`
    - route registration for `/api/control-room/command`
+   - route registration for `/api/control-room/layouts*`
    - route registration for `/events/control-room`
 2. Continue in the same file with helper methods:
    - auth and principal checks (`authorize*`)
    - namespace resolution/discovery helpers
-   - control-room snapshot builder and stream payload builder
+   - control-room snapshot/workflow payload builders
+   - layout profile persistence helpers (`readControlRoomLayouts` / `writeControlRoomLayouts`)
    - `controlRoomHtml()` frontend script (hotkeys + presets + localStorage layout + command bar)
 3. Map each view type back to runtime calls:
    - tasks/dead -> `runtime.tasks(...)`

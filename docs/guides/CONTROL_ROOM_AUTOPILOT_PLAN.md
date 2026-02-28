@@ -123,11 +123,25 @@ Acceptance:
 - command bridge supports read + write ops with auth-aware behavior
 - control-room page can inspect task DAG and execute commands without page switch
 
+## 3.8 Phase H - Backend Layout Profiles
+
+Delivered:
+
+- `GET /api/control-room/layouts` and `GET /api/control-room/layouts?name=<profile>`
+- `POST /api/control-room/layouts/save` and `POST /api/control-room/layouts/delete`
+- profile controls in UI (save/load/delete/refresh)
+- profile commands in command bar (`profile list|save|load|delete`)
+
+Acceptance:
+
+- layout profiles can survive browser changes because they are persisted server-side
+- profile APIs are auth-aware (read vs write permission)
+- UI can switch between saved profiles without leaving control-room
+
 ## 4. Next Iteration Backlog
 
 Planned for future autopilot rounds:
 
-- persistent operator profiles in backend (not only browser local storage)
-- richer workflow pane with dependency graph
+- richer workflow pane with dependency graph and click-through node detail
 - desktop shell packaging (JavaFX/Tauri/Electron) with native shortcuts
 - multi-screen docking layouts and monitor-wall mode (cross-monitor placement)

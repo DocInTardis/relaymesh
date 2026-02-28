@@ -213,6 +213,7 @@ Control Room 默认提供 4 个面板，并且由同一次后端快照统一驱�
 - 一键应用预设布局（`ops` / `incident` / `throughput` / `audit`）
 - 动态增加/减少监控面板（2-9 个）
 - 保存/清空本地布局（浏览器 `localStorage`）
+- 保存/加载/删除后端布局档案（`control-room-layouts.json`）
 - 复制分享链接（不包含 token）
 - 在控制室直接执行写操作（Cancel / Replay / Replay Batch）
 - 在控制室命令栏直接输入运维命令并执行
@@ -236,6 +237,10 @@ Control Room 默认提供 4 个面板，并且由同一次后端快照统一驱�
 - `GET /events/control-room?namespaces=all&intervalMs=3000`（SSE）
 - `POST /api/control-room/action`（写操作入口）
 - `POST /api/control-room/command`（命令桥接入口）
+- `GET /api/control-room/layouts`（列出档案）
+- `GET /api/control-room/layouts?name=<profile>`（读取档案）
+- `POST /api/control-room/layouts/save`（保存档案）
+- `POST /api/control-room/layouts/delete`（删除档案）
 
 `/api/control-room/action` 支持动作：
 
@@ -253,6 +258,10 @@ Control Room 默认提供 4 个面板，并且由同一次后端快照统一驱�
 - `tasks default RETRYING 20`
 - `workflow default <taskId>`
 - `cancel default <taskId> hard investigate`
+- `profile list`
+- `profile save <name>`
+- `profile load <name>`
+- `profile delete <name>`
 
 ## 7.3 启动 Metrics
 

@@ -1,6 +1,7 @@
 package io.relaymesh.cli;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import io.relaymesh.config.RelayMeshConfig;
 import io.relaymesh.model.TaskView;
 import io.relaymesh.runtime.RelayMeshRuntime;
@@ -108,6 +109,8 @@ import javax.net.ssl.SSLParameters;
         }
 )
 public final class RelayMeshCommand implements Runnable {
+    private static final Object CONTROL_ROOM_LAYOUTS_LOCK = new Object();
+
     @Option(names = {"--root"}, description = "Runtime data root directory", defaultValue = "data")
     String root;
 
@@ -1465,6 +1468,102 @@ public final class RelayMeshCommand implements Runnable {
                     }
                 }
                 writeJson(exchange, response, 200);
+            });
+            server.createContext("/api/control-room/layouts", exchange -> {
+                Map<String, String> q = parseParams(exchange);
+                AuthPrincipal principal = authorizePrincipal(exchange, q, auth, false);
+                if (principal == null) return;
+                String profile = normalizeLayoutProfileName(q.get("name"));
+                LinkedHashMap<String, JsonNode> profiles;
+                synchronized (CONTROL_ROOM_LAYOUTS_LOCK) {
+                    profiles = readControlRoomLayouts(rootBaseDir);
+                }
+                if (!profile.isEmpty()) {
+                    JsonNode layout = profiles.get(profile);
+                    if (layout == null) {
+                        writeJson(exchange, Map.of("error", "profile_not_found", "name", profile), 404);
+                        return;
+                    }
+                    writeJson(exchange, Map.of(
+                            "timestamp", Instant.now().toString(),
+                            "name", profile,
+                            "layout", layout
+                    ), 200);
+                    return;
+                }
+                List<String> names = new ArrayList<>(profiles.keySet());
+                names.sort(String::compareTo);
+                writeJson(exchange, Map.of(
+                        "timestamp", Instant.now().toString(),
+                        "profiles", names,
+                        "count", names.size()
+                ), 200);
+            });
+            server.createContext("/api/control-room/layouts/save", exchange -> {
+                if (!allowMethods(exchange, "POST")) return;
+                if (!allowWriteRate(exchange, writeRateLimiter, runtime, "/api/control-room/layouts/save")) return;
+                Map<String, String> q = parseParams(exchange);
+                AuthPrincipal principal = authorizePrincipal(exchange, q, auth, true);
+                if (principal == null) return;
+                String profile = normalizeLayoutProfileName(q.get("name"));
+                if (profile.isEmpty()) {
+                    writeJson(exchange, Map.of("error", "invalid_profile_name"), 400);
+                    return;
+                }
+                String layoutRaw = q.get("layout");
+                if (layoutRaw == null || layoutRaw.isBlank()) {
+                    writeJson(exchange, Map.of("error", "missing_layout"), 400);
+                    return;
+                }
+                JsonNode layout;
+                try {
+                    layout = Jsons.mapper().readTree(layoutRaw);
+                } catch (Exception e) {
+                    writeJson(exchange, Map.of("error", "invalid_layout_json"), 400);
+                    return;
+                }
+                if (layout == null || !layout.isObject()) {
+                    writeJson(exchange, Map.of("error", "invalid_layout_model"), 400);
+                    return;
+                }
+                int count;
+                synchronized (CONTROL_ROOM_LAYOUTS_LOCK) {
+                    LinkedHashMap<String, JsonNode> profiles = readControlRoomLayouts(rootBaseDir);
+                    profiles.put(profile, layout);
+                    writeControlRoomLayouts(rootBaseDir, profiles);
+                    count = profiles.size();
+                }
+                writeJson(exchange, Map.of(
+                        "timestamp", Instant.now().toString(),
+                        "saved", profile,
+                        "count", count
+                ), 200);
+            });
+            server.createContext("/api/control-room/layouts/delete", exchange -> {
+                if (!allowMethods(exchange, "POST")) return;
+                if (!allowWriteRate(exchange, writeRateLimiter, runtime, "/api/control-room/layouts/delete")) return;
+                Map<String, String> q = parseParams(exchange);
+                AuthPrincipal principal = authorizePrincipal(exchange, q, auth, true);
+                if (principal == null) return;
+                String profile = normalizeLayoutProfileName(q.get("name"));
+                if (profile.isEmpty()) {
+                    writeJson(exchange, Map.of("error", "invalid_profile_name"), 400);
+                    return;
+                }
+                boolean deleted;
+                int count;
+                synchronized (CONTROL_ROOM_LAYOUTS_LOCK) {
+                    LinkedHashMap<String, JsonNode> profiles = readControlRoomLayouts(rootBaseDir);
+                    deleted = profiles.remove(profile) != null;
+                    writeControlRoomLayouts(rootBaseDir, profiles);
+                    count = profiles.size();
+                }
+                writeJson(exchange, Map.of(
+                        "timestamp", Instant.now().toString(),
+                        "deleted", profile,
+                        "removed", deleted,
+                        "count", count
+                ), 200);
             });
             server.createContext("/events/control-room", exchange -> {
                 Map<String, String> q = parseParams(exchange);
@@ -3139,6 +3238,72 @@ public final class RelayMeshCommand implements Runnable {
                 || "replay_batch".equals(value);
     }
 
+    private static String normalizeLayoutProfileName(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return "";
+        }
+        String value = raw.trim();
+        if (value.length() > 64) {
+            return "";
+        }
+        for (int i = 0; i < value.length(); i++) {
+            char ch = value.charAt(i);
+            boolean ok = (ch >= 'a' && ch <= 'z')
+                    || (ch >= 'A' && ch <= 'Z')
+                    || (ch >= '0' && ch <= '9')
+                    || ch == '_' || ch == '-' || ch == '.';
+            if (!ok) {
+                return "";
+            }
+        }
+        return value;
+    }
+
+    private static Path controlRoomLayoutsPath(Path rootBaseDir) {
+        return rootBaseDir.resolve("control-room-layouts.json");
+    }
+
+    private static LinkedHashMap<String, JsonNode> readControlRoomLayouts(Path rootBaseDir) throws IOException {
+        LinkedHashMap<String, JsonNode> out = new LinkedHashMap<>();
+        Path file = controlRoomLayoutsPath(rootBaseDir);
+        if (!Files.exists(file)) {
+            return out;
+        }
+        JsonNode root = Jsons.mapper().readTree(file.toFile());
+        if (root == null || !root.isObject()) {
+            return out;
+        }
+        root.fields().forEachRemaining(entry -> {
+            String key = normalizeLayoutProfileName(entry.getKey());
+            JsonNode value = entry.getValue();
+            if (!key.isEmpty() && value != null && value.isObject()) {
+                out.put(key, value);
+            }
+        });
+        return out;
+    }
+
+    private static void writeControlRoomLayouts(Path rootBaseDir, Map<String, JsonNode> profiles) throws IOException {
+        Path file = controlRoomLayoutsPath(rootBaseDir);
+        Path parent = file.getParent();
+        if (parent != null) {
+            Files.createDirectories(parent);
+        }
+        ObjectNode root = Jsons.mapper().createObjectNode();
+        if (profiles != null) {
+            profiles.entrySet().stream()
+                    .sorted(Map.Entry.comparingByKey())
+                    .forEach(entry -> {
+                        String key = normalizeLayoutProfileName(entry.getKey());
+                        JsonNode value = entry.getValue();
+                        if (!key.isEmpty() && value != null && value.isObject()) {
+                            root.set(key, value);
+                        }
+                    });
+        }
+        Jsons.mapper().writerWithDefaultPrettyPrinter().writeValue(file.toFile(), root);
+    }
+
     private static List<String> resolveSeedEndpoints(List<String> cliSeeds, String seedsFile) {
         Set<String> unique = new LinkedHashSet<>();
         if (cliSeeds != null) {
@@ -3550,6 +3715,12 @@ public final class RelayMeshCommand implements Runnable {
                       gap: 8px;
                       margin-top: 8px;
                     }
+                    .profiles {
+                      display: grid;
+                      grid-template-columns: repeat(6, minmax(0, 1fr));
+                      gap: 8px;
+                      margin-top: 8px;
+                    }
                     .actions {
                       display: grid;
                       grid-template-columns: repeat(9, minmax(0, 1fr));
@@ -3659,6 +3830,9 @@ public final class RelayMeshCommand implements Runnable {
                       .ops {
                         grid-template-columns: repeat(3, minmax(0, 1fr));
                       }
+                      .profiles {
+                        grid-template-columns: repeat(3, minmax(0, 1fr));
+                      }
                       .actions {
                         grid-template-columns: repeat(3, minmax(0, 1fr));
                       }
@@ -3677,6 +3851,9 @@ public final class RelayMeshCommand implements Runnable {
                         grid-template-columns: 1fr;
                       }
                       .ops {
+                        grid-template-columns: 1fr;
+                      }
+                      .profiles {
                         grid-template-columns: 1fr;
                       }
                       .actions {
@@ -3726,6 +3903,14 @@ public final class RelayMeshCommand implements Runnable {
                         <button class="secondary" onclick="openApiNamespaces()">Open /api/namespaces</button>
                         <button class="secondary" onclick="openApiSnapshot()">Open Snapshot API</button>
                         <button class="secondary" onclick="toggleFullscreen()">Toggle Fullscreen</button>
+                      </div>
+                      <div class="profiles">
+                        <input id="profileNameInput" placeholder="layout profile name">
+                        <select id="profileSelect"><option value="">profile list</option></select>
+                        <button onclick="saveProfile()">Save Profile</button>
+                        <button onclick="loadSelectedProfile()">Load Profile</button>
+                        <button onclick="deleteSelectedProfile()">Delete Profile</button>
+                        <button class="secondary" onclick="refreshProfiles()">Refresh Profiles</button>
                       </div>
                       <div class="actions">
                         <input id="actionNamespaceInput" placeholder="action namespace (blank = focused pane)">
@@ -3801,7 +3986,8 @@ public final class RelayMeshCommand implements Runnable {
                       persistTimer: null,
                       panes: defaultPanes(),
                       pendingLayout: null,
-                      pendingPreset: ''
+                      pendingPreset: '',
+                      pendingProfile: ''
                     };
 
                     function authToken() {
@@ -4280,6 +4466,27 @@ public final class RelayMeshCommand implements Runnable {
                             return;
                           }
                         }
+                        if (cmd === 'profile' && parts.length >= 2) {
+                          const op = parts[1].toLowerCase();
+                          if (op === 'list') {
+                            await refreshProfiles();
+                            return;
+                          }
+                          if (op === 'save' && parts.length >= 3) {
+                            document.getElementById('profileNameInput').value = parts[2];
+                            await saveProfile();
+                            return;
+                          }
+                          if (op === 'load' && parts.length >= 3) {
+                            await loadProfileByName(parts[2]);
+                            return;
+                          }
+                          if (op === 'delete' && parts.length >= 3) {
+                            document.getElementById('profileNameInput').value = parts[2];
+                            await deleteSelectedProfile();
+                            return;
+                          }
+                        }
                         const out = await postForm('/api/control-room/command', { command: raw });
                         setActionResult(JSON.stringify(out, null, 2));
                         const lower = cmd.toLowerCase();
@@ -4288,6 +4495,9 @@ public final class RelayMeshCommand implements Runnable {
                         }
                         if (lower === 'workflow' && parts.length >= 3) {
                           document.getElementById('focusTaskInput').value = parts[2];
+                        }
+                        if (lower === 'help') {
+                          return;
                         }
                         await loadSnapshot();
                       } catch (e) {
@@ -4302,6 +4512,10 @@ public final class RelayMeshCommand implements Runnable {
                         'preset <ops|incident|throughput|audit>',
                         'pane add',
                         'pane remove',
+                        'profile list',
+                        'profile save <name>',
+                        'profile load <name>',
+                        'profile delete <name>',
                         'namespaces',
                         'stats <namespace>',
                         'members <namespace>',
@@ -4387,6 +4601,7 @@ public final class RelayMeshCommand implements Runnable {
                         statusFilter: document.getElementById('statusFilterInput').value.trim(),
                         focusTaskId: document.getElementById('focusTaskInput').value.trim(),
                         actionNs: document.getElementById('actionNamespaceInput').value.trim(),
+                        profile: document.getElementById('profileNameInput').value.trim(),
                         refreshSec: maxPollIntervalSec(),
                         transport: currentTransport(),
                         preset: document.getElementById('presetInput').value || '',
@@ -4407,6 +4622,9 @@ public final class RelayMeshCommand implements Runnable {
                       }
                       if (typeof layout.actionNs === 'string') {
                         document.getElementById('actionNamespaceInput').value = layout.actionNs;
+                      }
+                      if (typeof layout.profile === 'string') {
+                        document.getElementById('profileNameInput').value = layout.profile;
                       }
                       if (layout.refreshSec != null) {
                         document.getElementById('refreshSecInput').value = String(layout.refreshSec);
@@ -4491,6 +4709,99 @@ public final class RelayMeshCommand implements Runnable {
                       navigator.clipboard.writeText(link)
                         .then(() => setStatusLine('share link copied'))
                         .catch(err => setStatusLine('copy link failed: ' + err.message));
+                    }
+
+                    function profileNameFromInputs() {
+                      const rawInput = document.getElementById('profileNameInput').value.trim();
+                      if (rawInput) return rawInput;
+                      const selected = document.getElementById('profileSelect').value.trim();
+                      return selected;
+                    }
+
+                    async function refreshProfiles() {
+                      try {
+                        const out = await fetchJson('/api/control-room/layouts');
+                        const profiles = Array.isArray(out.profiles) ? out.profiles : [];
+                        const select = document.getElementById('profileSelect');
+                        const current = select.value;
+                        select.innerHTML = '<option value=\"\">profile list</option>';
+                        for (const name of profiles) {
+                          const opt = document.createElement('option');
+                          opt.value = name;
+                          opt.textContent = name;
+                          select.appendChild(opt);
+                        }
+                        if (current && profiles.includes(current)) {
+                          select.value = current;
+                        }
+                        setStatusLine('profiles loaded: ' + profiles.length);
+                      } catch (e) {
+                        setStatusLine('profile load failed: ' + e.message);
+                      }
+                    }
+
+                    async function saveProfile() {
+                      const name = profileNameFromInputs();
+                      if (!name) {
+                        setActionResult('profile save failed: missing profile name');
+                        return;
+                      }
+                      try {
+                        const payload = {
+                          name,
+                          layout: JSON.stringify(exportLayoutState())
+                        };
+                        const out = await postForm('/api/control-room/layouts/save', payload);
+                        document.getElementById('profileNameInput').value = name;
+                        await refreshProfiles();
+                        document.getElementById('profileSelect').value = name;
+                        setActionResult(JSON.stringify(out, null, 2));
+                      } catch (e) {
+                        setActionResult('profile save failed: ' + e.message);
+                      }
+                    }
+
+                    async function loadProfileByName(name) {
+                      if (!name) {
+                        setActionResult('profile load failed: missing profile name');
+                        return;
+                      }
+                      try {
+                        const out = await fetchJson('/api/control-room/layouts?name=' + encodeURIComponent(name));
+                        applyLayout(out.layout || {});
+                        reconcilePaneNamespaces();
+                        renderPaneShells();
+                        await loadSnapshot();
+                        applyTransport();
+                        document.getElementById('profileNameInput').value = name;
+                        document.getElementById('profileSelect').value = name;
+                        setActionResult(JSON.stringify(out, null, 2));
+                      } catch (e) {
+                        setActionResult('profile load failed: ' + e.message);
+                      }
+                    }
+
+                    async function loadSelectedProfile() {
+                      const name = profileNameFromInputs();
+                      await loadProfileByName(name);
+                    }
+
+                    async function deleteSelectedProfile() {
+                      const name = profileNameFromInputs();
+                      if (!name) {
+                        setActionResult('profile delete failed: missing profile name');
+                        return;
+                      }
+                      try {
+                        const out = await postForm('/api/control-room/layouts/delete', { name });
+                        await refreshProfiles();
+                        if (document.getElementById('profileSelect').value === name) {
+                          document.getElementById('profileSelect').value = '';
+                        }
+                        setActionResult(JSON.stringify(out, null, 2));
+                      } catch (e) {
+                        setActionResult('profile delete failed: ' + e.message);
+                      }
                     }
 
                     function openApiNamespaces() {
@@ -4617,6 +4928,11 @@ public final class RelayMeshCommand implements Runnable {
                         state.pendingPreset = preset;
                         document.getElementById('presetInput').value = preset;
                       }
+                      const profile = qp.get('profile') || '';
+                      if (profile) {
+                        state.pendingProfile = profile;
+                        document.getElementById('profileNameInput').value = profile;
+                      }
                       const focusTask = qp.get('focusTask') || '';
                       if (focusTask) {
                         document.getElementById('focusTaskInput').value = focusTask;
@@ -4650,6 +4966,14 @@ public final class RelayMeshCommand implements Runnable {
                       document.getElementById('refreshSecInput').addEventListener('change', triggerRefresh);
                       document.getElementById('transportInput').addEventListener('change', triggerRefresh);
                       document.getElementById('presetInput').addEventListener('change', persistLayoutSoon);
+                      document.getElementById('profileNameInput').addEventListener('change', persistLayoutSoon);
+                      document.getElementById('profileSelect').addEventListener('change', () => {
+                        const value = document.getElementById('profileSelect').value.trim();
+                        if (value) {
+                          document.getElementById('profileNameInput').value = value;
+                        }
+                        persistLayoutSoon();
+                      });
                       document.getElementById('actionNamespaceInput').addEventListener('change', persistLayoutSoon);
                       document.getElementById('commandInput').addEventListener('keydown', ev => {
                         if (ev.key === 'Enter') {
@@ -4667,6 +4991,7 @@ public final class RelayMeshCommand implements Runnable {
                       document.getElementById('tokenInput').addEventListener('change', () => {
                         stopRealtime();
                         loadNamespaces()
+                          .then(refreshProfiles)
                           .then(() => {
                             renderPaneShells();
                             return loadSnapshot();
@@ -4675,6 +5000,11 @@ public final class RelayMeshCommand implements Runnable {
                           .catch(err => setStatusLine('reload failed: ' + err.message));
                       });
                       await loadNamespaces();
+                      await refreshProfiles();
+                      if (state.pendingProfile) {
+                        await loadProfileByName(state.pendingProfile);
+                        return;
+                      }
                       const stored = state.pendingLayout == null ? loadLayoutFromStorage() : null;
                       if (state.pendingLayout != null) {
                         applyLayout(state.pendingLayout);
