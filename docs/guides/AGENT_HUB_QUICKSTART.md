@@ -41,6 +41,7 @@ Control Room enhancements:
 - add/remove panes for monitor-wall style views (`Ctrl++` / `Ctrl+-`)
 - execute control actions directly from web UI (`cancel` / `replay` / `replay_batch`)
 - use built-in command bar for operator commands (`Ctrl+Enter`)
+- use workflow pane + `focus task id` to inspect task DAG from control room
 
 Fast preset startup (no default workers, directly build a dual-project topology):
 

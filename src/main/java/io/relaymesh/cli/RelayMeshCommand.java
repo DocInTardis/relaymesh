@@ -1276,6 +1276,196 @@ public final class RelayMeshCommand implements Runnable {
                 }
                 writeJson(exchange, response, 200);
             });
+            server.createContext("/api/control-room/workflow", exchange -> {
+                Map<String, String> q = parseParams(exchange);
+                AuthPrincipal principal = authorizePrincipal(exchange, q, auth, false);
+                if (principal == null) return;
+                String requestedNamespace = normalizeNamespace(q.get("namespace"), defaultNamespace);
+                String taskId = q.get("taskId");
+                if (taskId == null || taskId.isBlank()) {
+                    writeJson(exchange, Map.of("error", "missing_task_id"), 400);
+                    return;
+                }
+                List<String> discovered = discoverNamespaces(rootBaseDir, defaultNamespace);
+                if (!discovered.contains(requestedNamespace)) {
+                    writeJson(
+                            exchange,
+                            Map.of("error", "namespace_not_found", "namespace", requestedNamespace),
+                            404
+                    );
+                    return;
+                }
+                if (!principalCanAccessNamespace(principal, requestedNamespace)) {
+                    writeJson(
+                            exchange,
+                            Map.of("error", "forbidden_namespace", "namespace", requestedNamespace),
+                            403
+                    );
+                    return;
+                }
+                RelayMeshRuntime scoped = runtimeForNamespace(parent.root, requestedNamespace, namespaceRuntimeCache);
+                var wf = scoped.workflow(taskId);
+                if (wf.isEmpty()) {
+                    writeJson(exchange, Map.of("error", "workflow_not_found", "taskId", taskId), 404);
+                    return;
+                }
+                LinkedHashMap<String, Object> payload = new LinkedHashMap<>();
+                payload.put("timestamp", Instant.now().toString());
+                payload.put("namespace", requestedNamespace);
+                payload.put("taskId", taskId);
+                payload.put("workflow", wf.get());
+                payload.put("edges", buildWorkflowEdges(wf.get()));
+                writeJson(exchange, payload, 200);
+            });
+            server.createContext("/api/control-room/command", exchange -> {
+                if (!allowMethods(exchange, "POST")) return;
+                Map<String, String> q = parseParams(exchange);
+                String command = q.get("command");
+                if (command == null || command.isBlank()) {
+                    writeJson(exchange, Map.of("error", "missing_command"), 400);
+                    return;
+                }
+                List<String> tokens = parseControlCommandTokens(command);
+                if (tokens.isEmpty()) {
+                    writeJson(exchange, Map.of("error", "empty_command"), 400);
+                    return;
+                }
+                String op = tokens.get(0).toLowerCase(Locale.ROOT);
+                boolean writeRequired = isControlRoomWriteCommand(op);
+                if (writeRequired) {
+                    if (!allowWriteRate(exchange, writeRateLimiter, runtime, "/api/control-room/command")) return;
+                }
+                AuthPrincipal principal = authorizePrincipal(exchange, q, auth, writeRequired);
+                if (principal == null) return;
+                List<String> discovered = discoverNamespaces(rootBaseDir, defaultNamespace);
+                LinkedHashMap<String, Object> response = new LinkedHashMap<>();
+                response.put("timestamp", Instant.now().toString());
+                response.put("command", command);
+                switch (op) {
+                    case "help" -> {
+                        response.put("result", Map.of(
+                                "commands", List.of(
+                                        "help",
+                                        "namespaces",
+                                        "stats <namespace>",
+                                        "members <namespace>",
+                                        "tasks <namespace> [status] [limit]",
+                                        "workflow <namespace> <taskId>",
+                                        "cancel <namespace> <taskId> [soft|hard] [reason...]",
+                                        "replay <namespace> <taskId>",
+                                        "replay-batch <namespace> [limit]"
+                                )
+                        ));
+                    }
+                    case "namespaces" -> {
+                        response.put("result", Map.of(
+                                "activeNamespace", defaultNamespace,
+                                "namespaces", filterVisibleNamespaces(discovered, principal)
+                        ));
+                    }
+                    case "stats", "members", "tasks", "workflow", "cancel", "replay", "replay-batch", "replay_batch" -> {
+                        if (tokens.size() < 2) {
+                            writeJson(exchange, Map.of("error", "missing_namespace", "command", op), 400);
+                            return;
+                        }
+                        String requestedNamespace = normalizeNamespace(tokens.get(1), defaultNamespace);
+                        if (!discovered.contains(requestedNamespace)) {
+                            writeJson(
+                                    exchange,
+                                    Map.of("error", "namespace_not_found", "namespace", requestedNamespace),
+                                    404
+                            );
+                            return;
+                        }
+                        if (!principalCanAccessNamespace(principal, requestedNamespace)) {
+                            writeJson(
+                                    exchange,
+                                    Map.of("error", "forbidden_namespace", "namespace", requestedNamespace),
+                                    403
+                            );
+                            return;
+                        }
+                        RelayMeshRuntime scoped = runtimeForNamespace(parent.root, requestedNamespace, namespaceRuntimeCache);
+                        response.put("namespace", requestedNamespace);
+                        switch (op) {
+                            case "stats" -> response.put("result", scoped.stats());
+                            case "members" -> response.put("result", scoped.members());
+                            case "tasks" -> {
+                                String status = tokens.size() >= 3 ? tokens.get(2) : "";
+                                if ("all".equalsIgnoreCase(status) || "-".equals(status)) {
+                                    status = "";
+                                }
+                                int limit = tokens.size() >= 4 ? clamp(parseIntOrDefault(tokens.get(3), 20), 1, 200) : 20;
+                                response.put("result", scoped.tasks(status, limit, 0));
+                            }
+                            case "workflow" -> {
+                                if (tokens.size() < 3) {
+                                    writeJson(exchange, Map.of("error", "missing_task_id", "command", op), 400);
+                                    return;
+                                }
+                                String taskId = tokens.get(2);
+                                var wf = scoped.workflow(taskId);
+                                if (wf.isEmpty()) {
+                                    writeJson(exchange, Map.of("error", "workflow_not_found", "taskId", taskId), 404);
+                                    return;
+                                }
+                                response.put("taskId", taskId);
+                                response.put("result", Map.of(
+                                        "workflow", wf.get(),
+                                        "edges", buildWorkflowEdges(wf.get())
+                                ));
+                            }
+                            case "cancel" -> {
+                                if (tokens.size() < 3) {
+                                    writeJson(exchange, Map.of("error", "missing_task_id", "command", op), 400);
+                                    return;
+                                }
+                                String taskId = tokens.get(2);
+                                String mode = tokens.size() >= 4 ? tokens.get(3) : "hard";
+                                String reason = joinCommandTail(tokens, 4);
+                                Map<String, Object> audit = new LinkedHashMap<>(requestAuditMeta(exchange, "/api/control-room/command"));
+                                audit.put("namespace", requestedNamespace);
+                                audit.put("control_command", command);
+                                Object result = scoped.cancelTaskViaWeb(taskId, reason, mode, audit);
+                                response.put("taskId", taskId);
+                                response.put("mode", mode);
+                                response.put("result", result);
+                            }
+                            case "replay" -> {
+                                if (tokens.size() < 3) {
+                                    writeJson(exchange, Map.of("error", "missing_task_id", "command", op), 400);
+                                    return;
+                                }
+                                String taskId = tokens.get(2);
+                                Map<String, Object> audit = new LinkedHashMap<>(requestAuditMeta(exchange, "/api/control-room/command"));
+                                audit.put("namespace", requestedNamespace);
+                                audit.put("control_command", command);
+                                Object result = scoped.replayDeadLetterViaWeb(taskId, audit);
+                                response.put("taskId", taskId);
+                                response.put("result", result);
+                            }
+                            case "replay-batch", "replay_batch" -> {
+                                int limit = tokens.size() >= 3 ? clamp(parseIntOrDefault(tokens.get(2), 50), 1, 500) : 50;
+                                Map<String, Object> audit = new LinkedHashMap<>(requestAuditMeta(exchange, "/api/control-room/command"));
+                                audit.put("namespace", requestedNamespace);
+                                audit.put("control_command", command);
+                                Object result = scoped.replayDeadLetterBatchViaWeb("DEAD_LETTER", limit, audit);
+                                response.put("limit", limit);
+                                response.put("result", result);
+                            }
+                            default -> {
+                                writeJson(exchange, Map.of("error", "unsupported_command", "command", op), 400);
+                                return;
+                            }
+                        }
+                    }
+                    default -> {
+                        writeJson(exchange, Map.of("error", "unsupported_command", "command", op), 400);
+                        return;
+                    }
+                }
+                writeJson(exchange, response, 200);
+            });
             server.createContext("/events/control-room", exchange -> {
                 Map<String, String> q = parseParams(exchange);
                 AuthPrincipal principal = authorizePrincipal(exchange, q, auth, false);
@@ -2877,6 +3067,78 @@ public final class RelayMeshCommand implements Runnable {
         return payload;
     }
 
+    private static List<String> buildWorkflowEdges(Object workflowPayload) {
+        List<String> edges = new ArrayList<>();
+        if (workflowPayload == null) {
+            return edges;
+        }
+        JsonNode root = Jsons.mapper().valueToTree(workflowPayload);
+        JsonNode steps = root.path("steps");
+        if (!steps.isArray()) {
+            return edges;
+        }
+        for (JsonNode step : steps) {
+            String stepId = step.path("stepId").asText();
+            if (stepId == null || stepId.isBlank()) {
+                stepId = step.path("id").asText();
+            }
+            if (stepId == null || stepId.isBlank()) {
+                continue;
+            }
+            JsonNode dependsOn = step.path("dependsOn");
+            if (!dependsOn.isArray() || dependsOn.isEmpty()) {
+                edges.add("[ROOT] -> " + stepId);
+                continue;
+            }
+            for (JsonNode dep : dependsOn) {
+                String depId = dep.asText();
+                if (depId == null || depId.isBlank()) {
+                    continue;
+                }
+                edges.add(depId + " -> " + stepId);
+            }
+        }
+        return edges;
+    }
+
+    private static List<String> parseControlCommandTokens(String raw) {
+        List<String> out = new ArrayList<>();
+        if (raw == null || raw.isBlank()) {
+            return out;
+        }
+        for (String token : raw.trim().split("\\s+")) {
+            if (token != null && !token.isBlank()) {
+                out.add(token.trim());
+            }
+        }
+        return out;
+    }
+
+    private static String joinCommandTail(List<String> tokens, int startIndex) {
+        if (tokens == null || tokens.isEmpty() || startIndex >= tokens.size()) {
+            return "";
+        }
+        StringBuilder sb = new StringBuilder();
+        for (int i = startIndex; i < tokens.size(); i++) {
+            if (i > startIndex) {
+                sb.append(' ');
+            }
+            sb.append(tokens.get(i));
+        }
+        return sb.toString();
+    }
+
+    private static boolean isControlRoomWriteCommand(String op) {
+        if (op == null || op.isBlank()) {
+            return false;
+        }
+        String value = op.trim().toLowerCase(Locale.ROOT);
+        return "cancel".equals(value)
+                || "replay".equals(value)
+                || "replay-batch".equals(value)
+                || "replay_batch".equals(value);
+    }
+
     private static List<String> resolveSeedEndpoints(List<String> cliSeeds, String seedsFile) {
         Set<String> unique = new LinkedHashSet<>();
         if (cliSeeds != null) {
@@ -3279,7 +3541,7 @@ public final class RelayMeshCommand implements Runnable {
                     }
                     .controls {
                       display: grid;
-                      grid-template-columns: repeat(10, minmax(0, 1fr));
+                      grid-template-columns: repeat(11, minmax(0, 1fr));
                       gap: 8px;
                     }
                     .ops {
@@ -3392,7 +3654,7 @@ public final class RelayMeshCommand implements Runnable {
                     }
                     @media (max-width: 1200px) {
                       .controls {
-                        grid-template-columns: repeat(5, minmax(0, 1fr));
+                        grid-template-columns: repeat(6, minmax(0, 1fr));
                       }
                       .ops {
                         grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -3437,6 +3699,7 @@ public final class RelayMeshCommand implements Runnable {
                         <input id="tokenInput" placeholder="token (optional)">
                         <input id="namespacesInput" placeholder="namespaces: all or default,project-a">
                         <input id="statusFilterInput" placeholder="task status filter (optional)">
+                        <input id="focusTaskInput" placeholder="focus task id (workflow/actions)">
                         <input id="refreshSecInput" type="number" min="1" max="60" value="5" placeholder="refresh sec">
                         <select id="transportInput">
                           <option value="sse">transport: sse</option>
@@ -3476,7 +3739,7 @@ public final class RelayMeshCommand implements Runnable {
                         <button class="secondary" onclick="clearActionResult()">Clear Action Output</button>
                       </div>
                       <div class="commandbar">
-                        <input id="commandInput" placeholder="command: cancel <ns> <taskId> [soft|hard] [reason...] | replay <ns> <taskId> | replay-batch <ns> [limit] | pane add|remove | preset <name> | refresh">
+                        <input id="commandInput" placeholder="command: stats|members|tasks|workflow|cancel|replay|replay-batch <ns> ... | pane add|remove | preset <name> | refresh">
                         <button class="secondary" onclick="runCommandLine()">Run Cmd</button>
                         <button class="secondary" onclick="showCommandHelp()">Cmd Help</button>
                       </div>
@@ -3531,6 +3794,7 @@ public final class RelayMeshCommand implements Runnable {
                     const state = {
                       namespaces: [],
                       snapshot: null,
+                      workflowCache: {},
                       activePane: 0,
                       pollTimer: null,
                       stream: null,
@@ -3608,7 +3872,7 @@ public final class RelayMeshCommand implements Runnable {
                     }
 
                     function paneViewOptions(selected) {
-                      const views = ['tasks', 'dead', 'conflicts', 'members', 'stats'];
+                      const views = ['tasks', 'dead', 'conflicts', 'members', 'stats', 'workflow'];
                       return views.map(v => {
                         const sel = v === selected ? 'selected' : '';
                         return `<option value="${v}" ${sel}>${v}</option>`;
@@ -3788,6 +4052,60 @@ public final class RelayMeshCommand implements Runnable {
                       return copy;
                     }
 
+                    function workflowCacheKey(namespace, taskId) {
+                      return namespace + '::' + taskId;
+                    }
+
+                    function firstTaskIdForNamespace(slot) {
+                      const tasks = safeArray(slot.tasks);
+                      if (tasks.length > 0 && tasks[0] && tasks[0].taskId) {
+                        return String(tasks[0].taskId);
+                      }
+                      const dead = safeArray(slot.dead);
+                      if (dead.length > 0 && dead[0] && dead[0].taskId) {
+                        return String(dead[0].taskId);
+                      }
+                      return '';
+                    }
+
+                    function formatWorkflowPayload(payload, namespace, taskId) {
+                      const wf = payload && payload.workflow ? payload.workflow : {};
+                      const task = wf && wf.task ? wf.task : {};
+                      const status = task && task.status ? String(task.status) : '';
+                      const edges = Array.isArray(payload && payload.edges) ? payload.edges : [];
+                      const head = 'workflow namespace=' + namespace + ' task=' + taskId + ' status=' + status;
+                      if (edges.length === 0) {
+                        return head + '\\n\\n(no edges)';
+                      }
+                      return head + '\\n\\n' + edges.join('\\n');
+                    }
+
+                    async function loadWorkflowForPane(index, namespace, taskId) {
+                      const key = workflowCacheKey(namespace, taskId);
+                      try {
+                        let payload = state.workflowCache[key];
+                        if (!payload) {
+                          payload = await fetchJson('/api/control-room/workflow?namespace=' + encodeURIComponent(namespace) + '&taskId=' + encodeURIComponent(taskId));
+                          state.workflowCache[key] = payload;
+                        }
+                        const pane = state.panes[index];
+                        if (!pane || pane.namespace !== namespace || pane.view !== 'workflow') {
+                          return;
+                        }
+                        const body = document.getElementById('paneBody' + pane.index);
+                        if (!body) return;
+                        body.textContent = formatWorkflowPayload(payload, namespace, taskId);
+                      } catch (e) {
+                        const pane = state.panes[index];
+                        if (!pane || pane.namespace !== namespace || pane.view !== 'workflow') {
+                          return;
+                        }
+                        const body = document.getElementById('paneBody' + pane.index);
+                        if (!body) return;
+                        body.textContent = 'workflow load failed: ' + e.message;
+                      }
+                    }
+
                     function renderPaneData(index) {
                       const cfg = state.panes[index];
                       const body = document.getElementById('paneBody' + cfg.index);
@@ -3829,6 +4147,22 @@ public final class RelayMeshCommand implements Runnable {
                         body.textContent = JSON.stringify(slot.members || {}, null, 2);
                         return;
                       }
+                      if (view === 'workflow') {
+                        const taskId = focusTaskId() || firstTaskIdForNamespace(slot);
+                        if (!taskId) {
+                          body.textContent = 'workflow view: set focus task id, or keep tasks available in this namespace';
+                          return;
+                        }
+                        const key = workflowCacheKey(ns, taskId);
+                        const cached = state.workflowCache[key];
+                        if (cached) {
+                          body.textContent = formatWorkflowPayload(cached, ns, taskId);
+                          return;
+                        }
+                        body.textContent = 'loading workflow for task=' + taskId + ' ...';
+                        loadWorkflowForPane(index, ns, taskId);
+                        return;
+                      }
                       body.textContent = JSON.stringify(slot.stats || {}, null, 2);
                     }
 
@@ -3864,6 +4198,10 @@ public final class RelayMeshCommand implements Runnable {
                       return first && first.taskId ? String(first.taskId) : '';
                     }
 
+                    function focusTaskId() {
+                      return document.getElementById('focusTaskInput').value.trim();
+                    }
+
                     function actionNamespace() {
                       const raw = document.getElementById('actionNamespaceInput').value.trim();
                       if (raw) return raw;
@@ -3875,6 +4213,8 @@ public final class RelayMeshCommand implements Runnable {
                     function actionTaskId() {
                       const raw = document.getElementById('actionTaskIdInput').value.trim();
                       if (raw) return raw;
+                      const focus = focusTaskId();
+                      if (focus) return focus;
                       return inferTaskIdFromActivePane();
                     }
 
@@ -3899,24 +4239,11 @@ public final class RelayMeshCommand implements Runnable {
                       try {
                         const out = await postForm('/api/control-room/action', payload);
                         setActionResult(JSON.stringify(out, null, 2));
+                        state.workflowCache = {};
                         await loadSnapshot();
                       } catch (e) {
                         setActionResult('action failed: ' + e.message);
                       }
-                    }
-
-                    async function runControlActionWith(namespace, action, mode = '', taskId = '', reason = '', limit = '') {
-                      const payload = { action, namespace };
-                      if (mode) payload.mode = mode;
-                      if (reason) payload.reason = reason;
-                      if (taskId) payload.taskId = taskId;
-                      if (limit) payload.limit = String(limit);
-                      if (action === 'replay_batch') {
-                        payload.status = 'DEAD_LETTER';
-                      }
-                      const out = await postForm('/api/control-room/action', payload);
-                      setActionResult(JSON.stringify(out, null, 2));
-                      await loadSnapshot();
                     }
 
                     function tokenizeCommand(raw) {
@@ -3953,27 +4280,16 @@ public final class RelayMeshCommand implements Runnable {
                             return;
                           }
                         }
-                        if (cmd === 'cancel' && parts.length >= 3) {
-                          const namespace = parts[1];
-                          const taskId = parts[2];
-                          const mode = parts.length >= 4 ? parts[3] : 'hard';
-                          const reason = parts.length >= 5 ? parts.slice(4).join(' ') : '';
-                          await runControlActionWith(namespace, 'cancel', mode, taskId, reason, '');
-                          return;
+                        const out = await postForm('/api/control-room/command', { command: raw });
+                        setActionResult(JSON.stringify(out, null, 2));
+                        const lower = cmd.toLowerCase();
+                        if (lower === 'cancel' || lower === 'replay' || lower === 'replay-batch' || lower === 'replay_batch') {
+                          state.workflowCache = {};
                         }
-                        if (cmd === 'replay' && parts.length >= 3) {
-                          const namespace = parts[1];
-                          const taskId = parts[2];
-                          await runControlActionWith(namespace, 'replay', '', taskId, '', '');
-                          return;
+                        if (lower === 'workflow' && parts.length >= 3) {
+                          document.getElementById('focusTaskInput').value = parts[2];
                         }
-                        if ((cmd === 'replay-batch' || cmd === 'replay_batch') && parts.length >= 2) {
-                          const namespace = parts[1];
-                          const limit = parts.length >= 3 ? Number.parseInt(parts[2], 10) : 50;
-                          await runControlActionWith(namespace, 'replay_batch', '', '', '', Number.isFinite(limit) ? limit : 50);
-                          return;
-                        }
-                        setActionResult('unknown command: ' + raw);
+                        await loadSnapshot();
                       } catch (e) {
                         setActionResult('command failed: ' + e.message);
                       }
@@ -3986,6 +4302,11 @@ public final class RelayMeshCommand implements Runnable {
                         'preset <ops|incident|throughput|audit>',
                         'pane add',
                         'pane remove',
+                        'namespaces',
+                        'stats <namespace>',
+                        'members <namespace>',
+                        'tasks <namespace> [status] [limit]',
+                        'workflow <namespace> <taskId>',
                         'cancel <namespace> <taskId> [soft|hard] [reason...]',
                         'replay <namespace> <taskId>',
                         'replay-batch <namespace> [limit]'
@@ -4064,6 +4385,7 @@ public final class RelayMeshCommand implements Runnable {
                         })),
                         namespaces: document.getElementById('namespacesInput').value.trim(),
                         statusFilter: document.getElementById('statusFilterInput').value.trim(),
+                        focusTaskId: document.getElementById('focusTaskInput').value.trim(),
                         actionNs: document.getElementById('actionNamespaceInput').value.trim(),
                         refreshSec: maxPollIntervalSec(),
                         transport: currentTransport(),
@@ -4079,6 +4401,9 @@ public final class RelayMeshCommand implements Runnable {
                       }
                       if (typeof layout.statusFilter === 'string') {
                         document.getElementById('statusFilterInput').value = layout.statusFilter;
+                      }
+                      if (typeof layout.focusTaskId === 'string') {
+                        document.getElementById('focusTaskInput').value = layout.focusTaskId;
                       }
                       if (typeof layout.actionNs === 'string') {
                         document.getElementById('actionNamespaceInput').value = layout.actionNs;
@@ -4292,6 +4617,10 @@ public final class RelayMeshCommand implements Runnable {
                         state.pendingPreset = preset;
                         document.getElementById('presetInput').value = preset;
                       }
+                      const focusTask = qp.get('focusTask') || '';
+                      if (focusTask) {
+                        document.getElementById('focusTaskInput').value = focusTask;
+                      }
                       const actionNs = qp.get('actionNs') || '';
                       if (actionNs) {
                         document.getElementById('actionNamespaceInput').value = actionNs;
@@ -4314,6 +4643,10 @@ public final class RelayMeshCommand implements Runnable {
                       };
                       document.getElementById('namespacesInput').addEventListener('change', triggerRefresh);
                       document.getElementById('statusFilterInput').addEventListener('change', triggerRefresh);
+                      document.getElementById('focusTaskInput').addEventListener('change', () => {
+                        persistLayoutSoon();
+                        renderAllPaneData();
+                      });
                       document.getElementById('refreshSecInput').addEventListener('change', triggerRefresh);
                       document.getElementById('transportInput').addEventListener('change', triggerRefresh);
                       document.getElementById('presetInput').addEventListener('change', persistLayoutSoon);

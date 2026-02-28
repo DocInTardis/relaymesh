@@ -108,6 +108,21 @@ Acceptance:
 - pane count changes take effect immediately and persist in layout state
 - command execution path works for `cancel`, `replay`, `replay-batch`, `preset`, `pane`, and `refresh`
 
+## 3.7 Phase G - Command Backend + Workflow View
+
+Delivered:
+
+- `GET /api/control-room/workflow` for namespace-scoped workflow fetch
+- `POST /api/control-room/command` for command bridge execution
+- workflow pane mode in control-room UI with `focus task id`
+- command bar upgraded to call backend command endpoint
+
+Acceptance:
+
+- workflow data can be fetched by both direct API and command bridge
+- command bridge supports read + write ops with auth-aware behavior
+- control-room page can inspect task DAG and execute commands without page switch
+
 ## 4. Next Iteration Backlog
 
 Planned for future autopilot rounds:

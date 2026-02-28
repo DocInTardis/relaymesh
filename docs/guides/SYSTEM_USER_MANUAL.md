@@ -205,8 +205,9 @@ mvn -q exec:java "-Dexec.args=--root tmp/manual-root serve-web --port 18080 --ro
 Control Room 默认提供 4 个面板，并且由同一次后端快照统一驱动。你可以：
 
 - 给每个面板独立选择 `namespace`
-- 切换视图类型：`tasks` / `dead` / `conflicts` / `members` / `stats`
+- 切换视图类型：`tasks` / `dead` / `conflicts` / `members` / `stats` / `workflow`
 - 对任务面板设置 `status` 与 `limit`
+- 设置全局 `focus task id`，供 workflow 视图和动作面板复用
 - 修改刷新间隔（1-60 秒）
 - 选择数据传输模式：`sse`（实时流）或 `poll`（轮询）
 - 一键应用预设布局（`ops` / `incident` / `throughput` / `audit`）
@@ -231,8 +232,10 @@ Control Room 默认提供 4 个面板，并且由同一次后端快照统一驱�
 
 - `GET /api/namespaces`
 - `GET /api/control-room/snapshot?namespaces=all&taskLimit=30&deadLimit=30&conflictLimit=20`
+- `GET /api/control-room/workflow?namespace=default&taskId=<taskId>`
 - `GET /events/control-room?namespaces=all&intervalMs=3000`（SSE）
 - `POST /api/control-room/action`（写操作入口）
+- `POST /api/control-room/command`（命令桥接入口）
 
 `/api/control-room/action` 支持动作：
 
@@ -241,6 +244,15 @@ Control Room 默认提供 4 个面板，并且由同一次后端快照统一驱�
 - `action=replay_batch`（参数：`namespace` `status` `limit`）
 
 如果启用了 web token 鉴权，写动作需要 `rw-token` 或具备 write 权限的 principal。
+
+`/api/control-room/command` 示例：
+
+- `help`
+- `namespaces`
+- `stats default`
+- `tasks default RETRYING 20`
+- `workflow default <taskId>`
+- `cancel default <taskId> hard investigate`
 
 ## 7.3 启动 Metrics
 
