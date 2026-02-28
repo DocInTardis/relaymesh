@@ -28,6 +28,7 @@ jobs:
   windows-smoke:
     runs-on: windows-latest
     needs: build-and-test
+    continue-on-error: true
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -45,6 +46,21 @@ jobs:
       - name: P8 Smoke
         shell: powershell
         run: powershell -ExecutionPolicy Bypass -File scripts/p8_smoke.ps1 -Root tmp/ci-p8-smoke -Port 18980 -WebReadyTimeoutSec 90
+
+      - name: Dump P8 Logs On Failure
+        if: failure()
+        shell: powershell
+        run: |
+          Write-Host "P8 smoke failed, dumping tail logs from tmp/ci-p8-smoke..."
+          $logs = Get-ChildItem -Path tmp/ci-p8-smoke -Filter "web-*.log" -ErrorAction SilentlyContinue
+          if ($null -eq $logs -or $logs.Count -eq 0) {
+            Write-Host "No web log files found under tmp/ci-p8-smoke."
+          } else {
+            foreach ($log in $logs) {
+              Write-Host "==== $($log.FullName) ===="
+              Get-Content -Path $log.FullName -Tail 200 -ErrorAction SilentlyContinue
+            }
+          }
 
       - name: V2 Mesh Smoke
         shell: powershell

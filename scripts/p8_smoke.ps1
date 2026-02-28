@@ -269,6 +269,18 @@ try {
     $summary | ConvertTo-Json
     $global:LASTEXITCODE = 0
 } catch {
+    if ($null -ne $rootPath -and (Test-Path $rootPath)) {
+        try {
+            Write-Host "[smoke] dumping web logs for diagnostics..."
+            $logs = Get-ChildItem -Path $rootPath -Filter "web-*.log" -ErrorAction SilentlyContinue
+            foreach ($log in $logs) {
+                Write-Host ("==== {0} ====" -f $log.FullName)
+                Get-Content -Path $log.FullName -Tail 200 -ErrorAction SilentlyContinue
+            }
+        } catch {
+            # Best effort diagnostics only.
+        }
+    }
     Write-Error $_
     throw
 } finally {
