@@ -56,6 +56,7 @@ After one-click startup, operators can:
 - 2026-02-28: added `ControlRoomRuntimeSupportTest` and passed compile + full test run.
 - 2026-02-28: committed and pushed Phase J as `b4bf325` to `origin/main`.
 - 2026-02-28: executed `scripts/control_room_api_smoke.ps1` and validated key control-room API paths (all checks passed).
+- 2026-02-28: committed and pushed Phase K as `507778c` to `origin/main`.
 
 ## 6. Current Execution Batch (Phase K)
 
@@ -65,7 +66,7 @@ After one-click startup, operators can:
 - [x] K2: Cover profile APIs (list/save/get/delete) in smoke flow.
 - [x] K3: Cover command/action auth behavior (ro denied, rw allowed) in smoke flow.
 - [x] K4: Execute script and verify all checks pass.
-- [ ] K5: Commit and push to `origin/main`.
+- [x] K5: Commit and push to `origin/main`.
 
 ### 6.2 Acceptance
 
