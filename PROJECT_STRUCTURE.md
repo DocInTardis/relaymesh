@@ -10,6 +10,8 @@ relaymesh/
   examples/                 # sample workflow inputs
   scripts/                  # smoke, benchmark, chaos scripts
   src/main/java/            # runtime implementation
+  src/main/resources/       # embedded web/static assets
+    web/                    # control-room HTML and related web resources
   src/test/java/            # unit/integration tests
   tmp/                      # local runtime outputs (ignored)
   pom.xml                   # build definition
