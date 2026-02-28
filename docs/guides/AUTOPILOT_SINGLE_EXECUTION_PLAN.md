@@ -41,7 +41,7 @@ After one-click startup, operators can:
 - [x] J2: Wire all control-room call sites to new helper module.
 - [x] J3: Add unit tests for extracted helper behaviors.
 - [x] J4: Run `mvn -q -DskipTests compile` and `mvn -q test`.
-- [ ] J5: Commit and push to `origin/main`.
+- [x] J5: Commit and push to `origin/main`.
 
 ### 4.2 Acceptance
 
@@ -54,3 +54,4 @@ After one-click startup, operators can:
 - 2026-02-28: document created as unified autopilot contract.
 - 2026-02-28: extracted `ControlRoomRuntimeSupport` and migrated namespace/snapshot/workflow helper call sites.
 - 2026-02-28: added `ControlRoomRuntimeSupportTest` and passed compile + full test run.
+- 2026-02-28: committed and pushed Phase J as `b4bf325` to `origin/main`.
