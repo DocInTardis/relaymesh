@@ -51,12 +51,15 @@ Reason: CLI methods are a thin map of capabilities exposed by `RelayMeshRuntime`
    - auth and principal checks (`authorize*`)
    - namespace resolution/discovery helpers
    - control-room snapshot/workflow payload builders
-   - layout profile persistence helpers (`readControlRoomLayouts` / `writeControlRoomLayouts`)
+   - layout profile integration points (`ControlRoomLayoutStore` invocations)
    - page wiring method `controlRoomHtml()` (delegates to `ControlRoomPage`)
 3. Read web assets:
    - `src/main/java/io/relaymesh/cli/ControlRoomPage.java`
    - `src/main/resources/web/control-room.html` frontend script (hotkeys + presets + localStorage layout + command bar)
-4. Map each view type back to runtime calls:
+4. Read control-room support modules:
+   - `src/main/java/io/relaymesh/cli/ControlRoomCommandParser.java`
+   - `src/main/java/io/relaymesh/cli/ControlRoomLayoutStore.java`
+5. Map each view type back to runtime calls:
    - tasks/dead -> `runtime.tasks(...)`
    - conflicts -> `runtime.leaseConflicts(...)`
    - members -> `runtime.members()`

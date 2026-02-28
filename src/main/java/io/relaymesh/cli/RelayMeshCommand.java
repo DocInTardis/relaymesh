@@ -1,7 +1,6 @@
 package io.relaymesh.cli;
 
 import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.node.ObjectNode;
 import io.relaymesh.config.RelayMeshConfig;
 import io.relaymesh.model.TaskView;
 import io.relaymesh.runtime.RelayMeshRuntime;
@@ -1328,13 +1327,13 @@ public final class RelayMeshCommand implements Runnable {
                     writeJson(exchange, Map.of("error", "missing_command"), 400);
                     return;
                 }
-                List<String> tokens = parseControlCommandTokens(command);
+                List<String> tokens = ControlRoomCommandParser.parseTokens(command);
                 if (tokens.isEmpty()) {
                     writeJson(exchange, Map.of("error", "empty_command"), 400);
                     return;
                 }
                 String op = tokens.get(0).toLowerCase(Locale.ROOT);
-                boolean writeRequired = isControlRoomWriteCommand(op);
+                boolean writeRequired = ControlRoomCommandParser.isWriteCommand(op);
                 if (writeRequired) {
                     if (!allowWriteRate(exchange, writeRateLimiter, runtime, "/api/control-room/command")) return;
                 }
@@ -1425,7 +1424,7 @@ public final class RelayMeshCommand implements Runnable {
                                 }
                                 String taskId = tokens.get(2);
                                 String mode = tokens.size() >= 4 ? tokens.get(3) : "hard";
-                                String reason = joinCommandTail(tokens, 4);
+                                String reason = ControlRoomCommandParser.joinTail(tokens, 4);
                                 Map<String, Object> audit = new LinkedHashMap<>(requestAuditMeta(exchange, "/api/control-room/command"));
                                 audit.put("namespace", requestedNamespace);
                                 audit.put("control_command", command);
@@ -1473,10 +1472,10 @@ public final class RelayMeshCommand implements Runnable {
                 Map<String, String> q = parseParams(exchange);
                 AuthPrincipal principal = authorizePrincipal(exchange, q, auth, false);
                 if (principal == null) return;
-                String profile = normalizeLayoutProfileName(q.get("name"));
+                String profile = ControlRoomLayoutStore.normalizeProfileName(q.get("name"));
                 LinkedHashMap<String, JsonNode> profiles;
                 synchronized (CONTROL_ROOM_LAYOUTS_LOCK) {
-                    profiles = readControlRoomLayouts(rootBaseDir);
+                    profiles = ControlRoomLayoutStore.readProfiles(rootBaseDir);
                 }
                 if (!profile.isEmpty()) {
                     JsonNode layout = profiles.get(profile);
@@ -1505,7 +1504,7 @@ public final class RelayMeshCommand implements Runnable {
                 Map<String, String> q = parseParams(exchange);
                 AuthPrincipal principal = authorizePrincipal(exchange, q, auth, true);
                 if (principal == null) return;
-                String profile = normalizeLayoutProfileName(q.get("name"));
+                String profile = ControlRoomLayoutStore.normalizeProfileName(q.get("name"));
                 if (profile.isEmpty()) {
                     writeJson(exchange, Map.of("error", "invalid_profile_name"), 400);
                     return;
@@ -1528,9 +1527,9 @@ public final class RelayMeshCommand implements Runnable {
                 }
                 int count;
                 synchronized (CONTROL_ROOM_LAYOUTS_LOCK) {
-                    LinkedHashMap<String, JsonNode> profiles = readControlRoomLayouts(rootBaseDir);
+                    LinkedHashMap<String, JsonNode> profiles = ControlRoomLayoutStore.readProfiles(rootBaseDir);
                     profiles.put(profile, layout);
-                    writeControlRoomLayouts(rootBaseDir, profiles);
+                    ControlRoomLayoutStore.writeProfiles(rootBaseDir, profiles);
                     count = profiles.size();
                 }
                 writeJson(exchange, Map.of(
@@ -1545,7 +1544,7 @@ public final class RelayMeshCommand implements Runnable {
                 Map<String, String> q = parseParams(exchange);
                 AuthPrincipal principal = authorizePrincipal(exchange, q, auth, true);
                 if (principal == null) return;
-                String profile = normalizeLayoutProfileName(q.get("name"));
+                String profile = ControlRoomLayoutStore.normalizeProfileName(q.get("name"));
                 if (profile.isEmpty()) {
                     writeJson(exchange, Map.of("error", "invalid_profile_name"), 400);
                     return;
@@ -1553,9 +1552,9 @@ public final class RelayMeshCommand implements Runnable {
                 boolean deleted;
                 int count;
                 synchronized (CONTROL_ROOM_LAYOUTS_LOCK) {
-                    LinkedHashMap<String, JsonNode> profiles = readControlRoomLayouts(rootBaseDir);
+                    LinkedHashMap<String, JsonNode> profiles = ControlRoomLayoutStore.readProfiles(rootBaseDir);
                     deleted = profiles.remove(profile) != null;
-                    writeControlRoomLayouts(rootBaseDir, profiles);
+                    ControlRoomLayoutStore.writeProfiles(rootBaseDir, profiles);
                     count = profiles.size();
                 }
                 writeJson(exchange, Map.of(
@@ -3198,110 +3197,6 @@ public final class RelayMeshCommand implements Runnable {
             }
         }
         return edges;
-    }
-
-    private static List<String> parseControlCommandTokens(String raw) {
-        List<String> out = new ArrayList<>();
-        if (raw == null || raw.isBlank()) {
-            return out;
-        }
-        for (String token : raw.trim().split("\\s+")) {
-            if (token != null && !token.isBlank()) {
-                out.add(token.trim());
-            }
-        }
-        return out;
-    }
-
-    private static String joinCommandTail(List<String> tokens, int startIndex) {
-        if (tokens == null || tokens.isEmpty() || startIndex >= tokens.size()) {
-            return "";
-        }
-        StringBuilder sb = new StringBuilder();
-        for (int i = startIndex; i < tokens.size(); i++) {
-            if (i > startIndex) {
-                sb.append(' ');
-            }
-            sb.append(tokens.get(i));
-        }
-        return sb.toString();
-    }
-
-    private static boolean isControlRoomWriteCommand(String op) {
-        if (op == null || op.isBlank()) {
-            return false;
-        }
-        String value = op.trim().toLowerCase(Locale.ROOT);
-        return "cancel".equals(value)
-                || "replay".equals(value)
-                || "replay-batch".equals(value)
-                || "replay_batch".equals(value);
-    }
-
-    private static String normalizeLayoutProfileName(String raw) {
-        if (raw == null || raw.isBlank()) {
-            return "";
-        }
-        String value = raw.trim();
-        if (value.length() > 64) {
-            return "";
-        }
-        for (int i = 0; i < value.length(); i++) {
-            char ch = value.charAt(i);
-            boolean ok = (ch >= 'a' && ch <= 'z')
-                    || (ch >= 'A' && ch <= 'Z')
-                    || (ch >= '0' && ch <= '9')
-                    || ch == '_' || ch == '-' || ch == '.';
-            if (!ok) {
-                return "";
-            }
-        }
-        return value;
-    }
-
-    private static Path controlRoomLayoutsPath(Path rootBaseDir) {
-        return rootBaseDir.resolve("control-room-layouts.json");
-    }
-
-    private static LinkedHashMap<String, JsonNode> readControlRoomLayouts(Path rootBaseDir) throws IOException {
-        LinkedHashMap<String, JsonNode> out = new LinkedHashMap<>();
-        Path file = controlRoomLayoutsPath(rootBaseDir);
-        if (!Files.exists(file)) {
-            return out;
-        }
-        JsonNode root = Jsons.mapper().readTree(file.toFile());
-        if (root == null || !root.isObject()) {
-            return out;
-        }
-        root.fields().forEachRemaining(entry -> {
-            String key = normalizeLayoutProfileName(entry.getKey());
-            JsonNode value = entry.getValue();
-            if (!key.isEmpty() && value != null && value.isObject()) {
-                out.put(key, value);
-            }
-        });
-        return out;
-    }
-
-    private static void writeControlRoomLayouts(Path rootBaseDir, Map<String, JsonNode> profiles) throws IOException {
-        Path file = controlRoomLayoutsPath(rootBaseDir);
-        Path parent = file.getParent();
-        if (parent != null) {
-            Files.createDirectories(parent);
-        }
-        ObjectNode root = Jsons.mapper().createObjectNode();
-        if (profiles != null) {
-            profiles.entrySet().stream()
-                    .sorted(Map.Entry.comparingByKey())
-                    .forEach(entry -> {
-                        String key = normalizeLayoutProfileName(entry.getKey());
-                        JsonNode value = entry.getValue();
-                        if (!key.isEmpty() && value != null && value.isObject()) {
-                            root.set(key, value);
-                        }
-                    });
-        }
-        Jsons.mapper().writerWithDefaultPrettyPrinter().writeValue(file.toFile(), root);
     }
 
     private static List<String> resolveSeedEndpoints(List<String> cliSeeds, String seedsFile) {
