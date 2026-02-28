@@ -11,10 +11,19 @@ $ProjectRoot = Split-Path -Parent $PSScriptRoot
 Push-Location $ProjectRoot
 
 try {
+    $MvnCmd = Get-Command "mvn.cmd" -ErrorAction SilentlyContinue
+    if ($null -eq $MvnCmd) {
+        $MvnCmd = Get-Command "mvn" -ErrorAction SilentlyContinue
+    }
+    if ($null -eq $MvnCmd) {
+        throw "Maven not found. Ensure mvn/mvn.cmd is available in PATH."
+    }
+    $MvnExecutable = $MvnCmd.Source
+
     function Invoke-RelayMesh {
         param([string]$ArgsLine)
         $execArg = "-Dexec.args=--root=$Root $ArgsLine"
-        $output = & mvn -q exec:java $execArg 2>&1
+        $output = & $script:MvnExecutable -q exec:java $execArg 2>&1
         if ($LASTEXITCODE -ne 0) {
             throw "relaymesh command failed: $ArgsLine`n$($output -join "`n")"
         }
@@ -50,10 +59,22 @@ try {
     function Wait-WebReady {
         param(
             [int]$ReadyPort,
-            [int]$TimeoutSec = 60
+            [int]$TimeoutSec = 60,
+            [int]$ProcessId = 0,
+            [string]$ErrorLogPath = ""
         )
         $deadline = (Get-Date).AddSeconds($TimeoutSec)
         while ((Get-Date) -lt $deadline) {
+            if ($ProcessId -gt 0) {
+                $proc = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
+                if ($null -eq $proc) {
+                    if (-not [string]::IsNullOrWhiteSpace($ErrorLogPath) -and (Test-Path $ErrorLogPath)) {
+                        $errTail = (Get-Content -Path $ErrorLogPath -ErrorAction SilentlyContinue | Select-Object -Last 40) -join "`n"
+                        throw "web process exited early; stderr tail:`n$errTail"
+                    }
+                    throw "web process exited early before readiness check"
+                }
+            }
             try {
                 $code = Get-StatusCode -Uri "http://127.0.0.1:$ReadyPort/"
                 if ($code -eq 200) {
@@ -98,51 +119,46 @@ try {
         throw "unable to find available adjacent ports for smoke web checks"
     }
 
-    function Start-WebJob {
+    function Start-WebProcess {
         param(
             [string]$ExecArgs,
-            [int]$ReadyPort
+            [int]$ReadyPort,
+            [string]$LogPrefix
         )
-        $job = Start-Job -ScriptBlock {
-            param($ProjectRootArg, $ExecArgsArg)
-            Set-Location $ProjectRootArg
-            & mvn -q exec:java "-Dexec.args=$ExecArgsArg"
-        } -ArgumentList $ProjectRoot, $ExecArgs
-        Wait-WebReady -ReadyPort $ReadyPort -TimeoutSec $WebReadyTimeoutSec
-        return $job
+        $prefix = if ([string]::IsNullOrWhiteSpace($LogPrefix)) { "web" } else { $LogPrefix.Trim() }
+        $outLog = Join-Path $rootPath ("{0}.out.log" -f $prefix)
+        $errLog = Join-Path $rootPath ("{0}.err.log" -f $prefix)
+        if (Test-Path $outLog) { Remove-Item $outLog -Force }
+        if (Test-Path $errLog) { Remove-Item $errLog -Force }
+
+        $execProp = "-Dexec.args=`"$ExecArgs`""
+        $proc = Start-Process -FilePath $script:MvnExecutable `
+            -ArgumentList @("-q", "exec:java", $execProp) `
+            -WorkingDirectory $ProjectRoot `
+            -WindowStyle Hidden `
+            -RedirectStandardOutput $outLog `
+            -RedirectStandardError $errLog `
+            -PassThru
+
+        Wait-WebReady -ReadyPort $ReadyPort -TimeoutSec $WebReadyTimeoutSec -ProcessId $proc.Id -ErrorLogPath $errLog
+        return [PSCustomObject]@{
+            Process = $proc
+            OutLog = $outLog
+            ErrLog = $errLog
+        }
     }
 
-    function Stop-WebJob {
+    function Stop-WebProcess {
         param(
-            $Job,
-            [string]$OutputLog,
-            [string]$ErrorLog
+            $Entry
         )
-        if ($null -eq $Job) {
+        if ($null -eq $Entry) {
             return
         }
         try {
-            Stop-Job -Job $Job -Force -ErrorAction SilentlyContinue
-        } catch {
-            # Ignore cleanup failures in smoke script.
-        }
-        try {
-            $rows = Receive-Job -Job $Job -Keep -ErrorAction SilentlyContinue
-            if ($OutputLog -and $rows) {
-                $rows | Out-File -FilePath $OutputLog -Encoding utf8
+            if ($null -ne $Entry.Process) {
+                Stop-Process -Id $Entry.Process.Id -Force -ErrorAction SilentlyContinue
             }
-        } catch {
-            # Ignore cleanup failures in smoke script.
-        }
-        try {
-            if ($ErrorLog -and (Test-Path $Job.ChildJobs[0].Error.File)) {
-                Copy-Item $Job.ChildJobs[0].Error.File $ErrorLog -Force
-            }
-        } catch {
-            # Ignore cleanup failures in smoke script.
-        }
-        try {
-            Remove-Job -Job $Job -Force -ErrorAction SilentlyContinue
         } catch {
             # Ignore cleanup failures in smoke script.
         }
@@ -153,7 +169,7 @@ try {
         Remove-Item -Recurse -Force $rootPath
     }
 
-    & mvn -q -DskipTests package
+    & $script:MvnExecutable -q -DskipTests package
     if ($LASTEXITCODE -ne 0) {
         throw "mvn package failed"
     }
@@ -200,10 +216,8 @@ try {
 
     $server = $null
     try {
-        $postOut = Join-Path $rootPath "web-post-only.out.log"
-        $postErr = Join-Path $rootPath "web-post-only.err.log"
         $postExecArgs = "--root=$Root serve-web --port $postPort --ro-token $roToken --rw-token $rwToken"
-        $server = Start-WebJob -ExecArgs $postExecArgs -ReadyPort $postPort
+        $server = Start-WebProcess -ExecArgs $postExecArgs -ReadyPort $postPort -LogPrefix "web-post-only"
 
         $summary["post_only_read_no_token"] = Get-StatusCode -Uri "http://127.0.0.1:$postPort/api/tasks?limit=1"
         $summary["post_only_read_ro_token"] = Get-StatusCode -Uri "http://127.0.0.1:$postPort/api/tasks?limit=1&token=$roToken"
@@ -215,15 +229,13 @@ try {
         if ($summary["post_only_write_get"] -ne 405) { throw "expected 405 for GET write on post-only mode, got $($summary["post_only_write_get"])" }
         if ($summary["post_only_write_post"] -ne 200) { throw "expected 200 for POST write, got $($summary["post_only_write_post"])" }
     } finally {
-        Stop-WebJob -Job $server -OutputLog $postOut -ErrorLog $postErr
+        Stop-WebProcess -Entry $server
     }
 
     $server = $null
     try {
-        $compatOut = Join-Path $rootPath "web-allow-get.out.log"
-        $compatErr = Join-Path $rootPath "web-allow-get.err.log"
         $compatExecArgs = "--root=$Root serve-web --port $compatPort --ro-token $roToken --rw-token $rwToken --allow-get-writes"
-        $server = Start-WebJob -ExecArgs $compatExecArgs -ReadyPort $compatPort
+        $server = Start-WebProcess -ExecArgs $compatExecArgs -ReadyPort $compatPort -LogPrefix "web-allow-get"
 
         $summary["allow_get_write_get"] = Get-StatusCode -Uri "http://127.0.0.1:$compatPort/api/replay-batch?status=DEAD_LETTER&limit=1&token=$rwToken"
         if ($summary["allow_get_write_get"] -ne 200) {
@@ -244,7 +256,7 @@ try {
             throw "expected relaymesh_web_write_get_compat_total >= 1, got $($summary["allow_get_metric_value"])"
         }
     } finally {
-        Stop-WebJob -Job $server -OutputLog $compatOut -ErrorLog $compatErr
+        Stop-WebProcess -Entry $server
     }
 
     $gossipOut = Invoke-RelayMesh "gossip-sync --node-id smoke-a --bind-port 18961 --seeds 127.0.0.1:18962 --window-ms 400 --rounds 1 --interval-ms 100 --fanout 1 --ttl 1"
