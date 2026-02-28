@@ -39,6 +39,7 @@ Reason: CLI methods are a thin map of capabilities exposed by `RelayMeshRuntime`
 ## 4) Read Control-Room Path (UI -> API -> Runtime)
 
 1. In `src/main/java/io/relaymesh/cli/RelayMeshCommand.java`, read `serve-web` first:
+   - high-level control-room wiring via `registerControlRoomRoutes(...)`
    - route registration for `/control-room`
    - route registration for `/api/namespaces`
    - route registration for `/api/control-room/snapshot`

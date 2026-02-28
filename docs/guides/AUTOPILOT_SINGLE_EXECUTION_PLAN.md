@@ -30,7 +30,7 @@ After one-click startup, operators can:
 - [x] Phase I: Maintainability refactor round 1 (page resource extraction, parser/store extraction).
 - [x] Phase J: Maintainability refactor round 2 (namespace/snapshot/workflow helpers extraction).
 - [x] Phase K: Control-room API integration test coverage expansion.
-- [ ] Phase L: serve-web route registration modularization.
+- [x] Phase L: serve-web route registration modularization.
 - [ ] Phase M: desktop shell and packaging path.
 
 ## 4. Current Execution Batch (Phase J)
@@ -57,6 +57,8 @@ After one-click startup, operators can:
 - 2026-02-28: committed and pushed Phase J as `b4bf325` to `origin/main`.
 - 2026-02-28: executed `scripts/control_room_api_smoke.ps1` and validated key control-room API paths (all checks passed).
 - 2026-02-28: committed and pushed Phase K as `507778c` to `origin/main`.
+- 2026-02-28: extracted control-room route registration from `serve-web` main flow into `registerControlRoomRoutes(...)`.
+- 2026-02-28: re-validated with compile + full test + control-room API smoke script.
 
 ## 6. Current Execution Batch (Phase K)
 
@@ -73,3 +75,19 @@ After one-click startup, operators can:
 - Control-room key APIs are validated by a reproducible script.
 - Script verifies both success and permission-denied paths.
 - Script can be run by operators without modifying source code.
+
+## 7. Current Execution Batch (Phase L)
+
+### 7.1 Tasks
+
+- [x] L1: Extract control-room route registration out of `ServeWebCommand.call()`.
+- [x] L2: Keep all control-room routes and auth behavior unchanged.
+- [x] L3: Re-run compile and full tests after modularization.
+- [x] L4: Re-run control-room API smoke script for behavior regression check.
+- [ ] L5: Commit and push to `origin/main`.
+
+### 7.2 Acceptance
+
+- `ServeWebCommand.call()` is shorter and clearer.
+- Control-room route wiring lives in a dedicated helper method.
+- Existing control-room API behavior remains intact after refactor.

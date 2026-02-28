@@ -1128,507 +1128,19 @@ public final class RelayMeshCommand implements Runnable {
                     os.write(body);
                 }
             });
-            server.createContext("/control-room", exchange -> {
-                byte[] body = controlRoomHtml().getBytes(StandardCharsets.UTF_8);
-                exchange.getResponseHeaders().set("Content-Type", "text/html; charset=utf-8");
-                exchange.sendResponseHeaders(200, body.length);
-                try (OutputStream os = exchange.getResponseBody()) {
-                    os.write(body);
-                }
-            });
-            server.createContext("/api/namespaces", exchange -> {
-                Map<String, String> q = parseParams(exchange);
-                AuthPrincipal principal = authorizePrincipal(exchange, q, auth, false);
-                if (principal == null) return;
-                List<String> discovered = ControlRoomRuntimeSupport.discoverNamespaces(rootBaseDir, defaultNamespace);
-                List<String> visible = filterVisibleNamespaces(discovered, principal);
-                writeJson(exchange, Map.of(
-                        "activeNamespace", defaultNamespace,
-                        "namespaces", visible,
-                        "timestamp", Instant.now().toString()
-                ), 200);
-            });
-            server.createContext("/api/control-room/snapshot", exchange -> {
-                Map<String, String> q = parseParams(exchange);
-                AuthPrincipal principal = authorizePrincipal(exchange, q, auth, false);
-                if (principal == null) return;
-                int snapshotTaskLimit = clamp(parseIntOrDefault(q.get("taskLimit"), taskLimit), 1, 200);
-                int snapshotDeadLimit = clamp(parseIntOrDefault(q.get("deadLimit"), deadLimit), 1, 200);
-                int snapshotConflictLimit = clamp(parseIntOrDefault(q.get("conflictLimit"), 20), 1, 200);
-                int snapshotSinceHours = clamp(parseIntOrDefault(q.get("sinceHours"), 24), 1, 24 * 30);
-                String statusFilter = q.get("status");
-                List<String> discovered = ControlRoomRuntimeSupport.discoverNamespaces(rootBaseDir, defaultNamespace);
-                List<String> requested = ControlRoomRuntimeSupport.resolveRequestedNamespaces(
-                        q.get("namespaces"),
-                        q.get("ns"),
-                        defaultNamespace,
-                        discovered
-                );
-                if (requested.isEmpty()) {
-                    requested = List.of(defaultNamespace);
-                }
-                for (String requestedNamespace : requested) {
-                    if (!discovered.contains(requestedNamespace)) {
-                        writeJson(
-                                exchange,
-                                Map.of("error", "namespace_not_found", "namespace", requestedNamespace),
-                                404
-                        );
-                        return;
-                    }
-                    if (!principalCanAccessNamespace(principal, requestedNamespace)) {
-                        writeJson(
-                                exchange,
-                                Map.of("error", "forbidden_namespace", "namespace", requestedNamespace),
-                                403
-                        );
-                        return;
-                    }
-                }
-                LinkedHashMap<String, Object> payload = ControlRoomRuntimeSupport.buildSnapshotPayload(
-                        parent.root,
-                        defaultNamespace,
-                        namespaceRuntimeCache,
-                        requested,
-                        statusFilter,
-                        snapshotTaskLimit,
-                        snapshotDeadLimit,
-                        snapshotConflictLimit,
-                        snapshotSinceHours
-                );
-                writeJson(exchange, payload, 200);
-            });
-            server.createContext("/api/control-room/action", exchange -> {
-                if (!allowWriteMethod(exchange, allowGetWrites, runtime, "/api/control-room/action")) return;
-                if (!allowWriteRate(exchange, writeRateLimiter, runtime, "/api/control-room/action")) return;
-                Map<String, String> q = parseParams(exchange);
-                AuthPrincipal principal = authorizePrincipal(exchange, q, auth, true);
-                if (principal == null) return;
-                String action = q.get("action");
-                if (action == null || action.isBlank()) {
-                    writeJson(exchange, Map.of("error", "missing_action"), 400);
-                    return;
-                }
-                String requestedNamespace = ControlRoomRuntimeSupport.normalizeNamespace(q.get("namespace"), defaultNamespace);
-                List<String> discovered = ControlRoomRuntimeSupport.discoverNamespaces(rootBaseDir, defaultNamespace);
-                if (!discovered.contains(requestedNamespace)) {
-                    writeJson(
-                            exchange,
-                            Map.of("error", "namespace_not_found", "namespace", requestedNamespace),
-                            404
-                    );
-                    return;
-                }
-                if (!principalCanAccessNamespace(principal, requestedNamespace)) {
-                    writeJson(
-                            exchange,
-                            Map.of("error", "forbidden_namespace", "namespace", requestedNamespace),
-                            403
-                    );
-                    return;
-                }
-                RelayMeshRuntime scoped = ControlRoomRuntimeSupport.runtimeForNamespace(parent.root, requestedNamespace, namespaceRuntimeCache);
-                Map<String, Object> auditMeta = new LinkedHashMap<>(requestAuditMeta(exchange, "/api/control-room/action"));
-                auditMeta.put("namespace", requestedNamespace);
-                auditMeta.put("control_action", action);
-                LinkedHashMap<String, Object> response = new LinkedHashMap<>();
-                response.put("timestamp", Instant.now().toString());
-                response.put("namespace", requestedNamespace);
-                response.put("action", action);
-                switch (action.trim().toLowerCase(Locale.ROOT)) {
-                    case "cancel" -> {
-                        String taskId = q.get("taskId");
-                        if (taskId == null || taskId.isBlank()) {
-                            writeJson(exchange, Map.of("error", "missing_task_id"), 400);
-                            return;
-                        }
-                        String mode = q.get("mode");
-                        String reason = q.get("reason");
-                        Object result = scoped.cancelTaskViaWeb(
-                                taskId,
-                                reason,
-                                mode == null || mode.isBlank() ? "hard" : mode,
-                                auditMeta
-                        );
-                        response.put("result", result);
-                    }
-                    case "replay" -> {
-                        String taskId = q.get("taskId");
-                        if (taskId == null || taskId.isBlank()) {
-                            writeJson(exchange, Map.of("error", "missing_task_id"), 400);
-                            return;
-                        }
-                        Object result = scoped.replayDeadLetterViaWeb(taskId, auditMeta);
-                        response.put("result", result);
-                    }
-                    case "replay_batch" -> {
-                        String status = q.get("status");
-                        int limit = clamp(parseIntOrDefault(q.get("limit"), 100), 1, 500);
-                        Object result = scoped.replayDeadLetterBatchViaWeb(
-                                status == null || status.isBlank() ? "DEAD_LETTER" : status,
-                                limit,
-                                auditMeta
-                        );
-                        response.put("result", result);
-                    }
-                    default -> {
-                        writeJson(exchange, Map.of("error", "unsupported_action", "action", action), 400);
-                        return;
-                    }
-                }
-                writeJson(exchange, response, 200);
-            });
-            server.createContext("/api/control-room/workflow", exchange -> {
-                Map<String, String> q = parseParams(exchange);
-                AuthPrincipal principal = authorizePrincipal(exchange, q, auth, false);
-                if (principal == null) return;
-                String requestedNamespace = ControlRoomRuntimeSupport.normalizeNamespace(q.get("namespace"), defaultNamespace);
-                String taskId = q.get("taskId");
-                if (taskId == null || taskId.isBlank()) {
-                    writeJson(exchange, Map.of("error", "missing_task_id"), 400);
-                    return;
-                }
-                List<String> discovered = ControlRoomRuntimeSupport.discoverNamespaces(rootBaseDir, defaultNamespace);
-                if (!discovered.contains(requestedNamespace)) {
-                    writeJson(
-                            exchange,
-                            Map.of("error", "namespace_not_found", "namespace", requestedNamespace),
-                            404
-                    );
-                    return;
-                }
-                if (!principalCanAccessNamespace(principal, requestedNamespace)) {
-                    writeJson(
-                            exchange,
-                            Map.of("error", "forbidden_namespace", "namespace", requestedNamespace),
-                            403
-                    );
-                    return;
-                }
-                RelayMeshRuntime scoped = ControlRoomRuntimeSupport.runtimeForNamespace(parent.root, requestedNamespace, namespaceRuntimeCache);
-                var wf = scoped.workflow(taskId);
-                if (wf.isEmpty()) {
-                    writeJson(exchange, Map.of("error", "workflow_not_found", "taskId", taskId), 404);
-                    return;
-                }
-                LinkedHashMap<String, Object> payload = new LinkedHashMap<>();
-                payload.put("timestamp", Instant.now().toString());
-                payload.put("namespace", requestedNamespace);
-                payload.put("taskId", taskId);
-                payload.put("workflow", wf.get());
-                payload.put("edges", ControlRoomRuntimeSupport.buildWorkflowEdges(wf.get()));
-                writeJson(exchange, payload, 200);
-            });
-            server.createContext("/api/control-room/command", exchange -> {
-                if (!allowMethods(exchange, "POST")) return;
-                Map<String, String> q = parseParams(exchange);
-                String command = q.get("command");
-                if (command == null || command.isBlank()) {
-                    writeJson(exchange, Map.of("error", "missing_command"), 400);
-                    return;
-                }
-                List<String> tokens = ControlRoomCommandParser.parseTokens(command);
-                if (tokens.isEmpty()) {
-                    writeJson(exchange, Map.of("error", "empty_command"), 400);
-                    return;
-                }
-                String op = tokens.get(0).toLowerCase(Locale.ROOT);
-                boolean writeRequired = ControlRoomCommandParser.isWriteCommand(op);
-                if (writeRequired) {
-                    if (!allowWriteRate(exchange, writeRateLimiter, runtime, "/api/control-room/command")) return;
-                }
-                AuthPrincipal principal = authorizePrincipal(exchange, q, auth, writeRequired);
-                if (principal == null) return;
-                List<String> discovered = ControlRoomRuntimeSupport.discoverNamespaces(rootBaseDir, defaultNamespace);
-                LinkedHashMap<String, Object> response = new LinkedHashMap<>();
-                response.put("timestamp", Instant.now().toString());
-                response.put("command", command);
-                switch (op) {
-                    case "help" -> {
-                        response.put("result", Map.of(
-                                "commands", List.of(
-                                        "help",
-                                        "namespaces",
-                                        "stats <namespace>",
-                                        "members <namespace>",
-                                        "tasks <namespace> [status] [limit]",
-                                        "workflow <namespace> <taskId>",
-                                        "cancel <namespace> <taskId> [soft|hard] [reason...]",
-                                        "replay <namespace> <taskId>",
-                                        "replay-batch <namespace> [limit]"
-                                )
-                        ));
-                    }
-                    case "namespaces" -> {
-                        response.put("result", Map.of(
-                                "activeNamespace", defaultNamespace,
-                                "namespaces", filterVisibleNamespaces(discovered, principal)
-                        ));
-                    }
-                    case "stats", "members", "tasks", "workflow", "cancel", "replay", "replay-batch", "replay_batch" -> {
-                        if (tokens.size() < 2) {
-                            writeJson(exchange, Map.of("error", "missing_namespace", "command", op), 400);
-                            return;
-                        }
-                        String requestedNamespace = ControlRoomRuntimeSupport.normalizeNamespace(tokens.get(1), defaultNamespace);
-                        if (!discovered.contains(requestedNamespace)) {
-                            writeJson(
-                                    exchange,
-                                    Map.of("error", "namespace_not_found", "namespace", requestedNamespace),
-                                    404
-                            );
-                            return;
-                        }
-                        if (!principalCanAccessNamespace(principal, requestedNamespace)) {
-                            writeJson(
-                                    exchange,
-                                    Map.of("error", "forbidden_namespace", "namespace", requestedNamespace),
-                                    403
-                            );
-                            return;
-                        }
-                        RelayMeshRuntime scoped = ControlRoomRuntimeSupport.runtimeForNamespace(parent.root, requestedNamespace, namespaceRuntimeCache);
-                        response.put("namespace", requestedNamespace);
-                        switch (op) {
-                            case "stats" -> response.put("result", scoped.stats());
-                            case "members" -> response.put("result", scoped.members());
-                            case "tasks" -> {
-                                String status = tokens.size() >= 3 ? tokens.get(2) : "";
-                                if ("all".equalsIgnoreCase(status) || "-".equals(status)) {
-                                    status = "";
-                                }
-                                int limit = tokens.size() >= 4 ? clamp(parseIntOrDefault(tokens.get(3), 20), 1, 200) : 20;
-                                response.put("result", scoped.tasks(status, limit, 0));
-                            }
-                            case "workflow" -> {
-                                if (tokens.size() < 3) {
-                                    writeJson(exchange, Map.of("error", "missing_task_id", "command", op), 400);
-                                    return;
-                                }
-                                String taskId = tokens.get(2);
-                                var wf = scoped.workflow(taskId);
-                                if (wf.isEmpty()) {
-                                    writeJson(exchange, Map.of("error", "workflow_not_found", "taskId", taskId), 404);
-                                    return;
-                                }
-                                response.put("taskId", taskId);
-                                response.put("result", Map.of(
-                                        "workflow", wf.get(),
-                                        "edges", ControlRoomRuntimeSupport.buildWorkflowEdges(wf.get())
-                                ));
-                            }
-                            case "cancel" -> {
-                                if (tokens.size() < 3) {
-                                    writeJson(exchange, Map.of("error", "missing_task_id", "command", op), 400);
-                                    return;
-                                }
-                                String taskId = tokens.get(2);
-                                String mode = tokens.size() >= 4 ? tokens.get(3) : "hard";
-                                String reason = ControlRoomCommandParser.joinTail(tokens, 4);
-                                Map<String, Object> audit = new LinkedHashMap<>(requestAuditMeta(exchange, "/api/control-room/command"));
-                                audit.put("namespace", requestedNamespace);
-                                audit.put("control_command", command);
-                                Object result = scoped.cancelTaskViaWeb(taskId, reason, mode, audit);
-                                response.put("taskId", taskId);
-                                response.put("mode", mode);
-                                response.put("result", result);
-                            }
-                            case "replay" -> {
-                                if (tokens.size() < 3) {
-                                    writeJson(exchange, Map.of("error", "missing_task_id", "command", op), 400);
-                                    return;
-                                }
-                                String taskId = tokens.get(2);
-                                Map<String, Object> audit = new LinkedHashMap<>(requestAuditMeta(exchange, "/api/control-room/command"));
-                                audit.put("namespace", requestedNamespace);
-                                audit.put("control_command", command);
-                                Object result = scoped.replayDeadLetterViaWeb(taskId, audit);
-                                response.put("taskId", taskId);
-                                response.put("result", result);
-                            }
-                            case "replay-batch", "replay_batch" -> {
-                                int limit = tokens.size() >= 3 ? clamp(parseIntOrDefault(tokens.get(2), 50), 1, 500) : 50;
-                                Map<String, Object> audit = new LinkedHashMap<>(requestAuditMeta(exchange, "/api/control-room/command"));
-                                audit.put("namespace", requestedNamespace);
-                                audit.put("control_command", command);
-                                Object result = scoped.replayDeadLetterBatchViaWeb("DEAD_LETTER", limit, audit);
-                                response.put("limit", limit);
-                                response.put("result", result);
-                            }
-                            default -> {
-                                writeJson(exchange, Map.of("error", "unsupported_command", "command", op), 400);
-                                return;
-                            }
-                        }
-                    }
-                    default -> {
-                        writeJson(exchange, Map.of("error", "unsupported_command", "command", op), 400);
-                        return;
-                    }
-                }
-                writeJson(exchange, response, 200);
-            });
-            server.createContext("/api/control-room/layouts", exchange -> {
-                Map<String, String> q = parseParams(exchange);
-                AuthPrincipal principal = authorizePrincipal(exchange, q, auth, false);
-                if (principal == null) return;
-                String profile = ControlRoomLayoutStore.normalizeProfileName(q.get("name"));
-                LinkedHashMap<String, JsonNode> profiles;
-                synchronized (CONTROL_ROOM_LAYOUTS_LOCK) {
-                    profiles = ControlRoomLayoutStore.readProfiles(rootBaseDir);
-                }
-                if (!profile.isEmpty()) {
-                    JsonNode layout = profiles.get(profile);
-                    if (layout == null) {
-                        writeJson(exchange, Map.of("error", "profile_not_found", "name", profile), 404);
-                        return;
-                    }
-                    writeJson(exchange, Map.of(
-                            "timestamp", Instant.now().toString(),
-                            "name", profile,
-                            "layout", layout
-                    ), 200);
-                    return;
-                }
-                List<String> names = new ArrayList<>(profiles.keySet());
-                names.sort(String::compareTo);
-                writeJson(exchange, Map.of(
-                        "timestamp", Instant.now().toString(),
-                        "profiles", names,
-                        "count", names.size()
-                ), 200);
-            });
-            server.createContext("/api/control-room/layouts/save", exchange -> {
-                if (!allowMethods(exchange, "POST")) return;
-                if (!allowWriteRate(exchange, writeRateLimiter, runtime, "/api/control-room/layouts/save")) return;
-                Map<String, String> q = parseParams(exchange);
-                AuthPrincipal principal = authorizePrincipal(exchange, q, auth, true);
-                if (principal == null) return;
-                String profile = ControlRoomLayoutStore.normalizeProfileName(q.get("name"));
-                if (profile.isEmpty()) {
-                    writeJson(exchange, Map.of("error", "invalid_profile_name"), 400);
-                    return;
-                }
-                String layoutRaw = q.get("layout");
-                if (layoutRaw == null || layoutRaw.isBlank()) {
-                    writeJson(exchange, Map.of("error", "missing_layout"), 400);
-                    return;
-                }
-                JsonNode layout;
-                try {
-                    layout = Jsons.mapper().readTree(layoutRaw);
-                } catch (Exception e) {
-                    writeJson(exchange, Map.of("error", "invalid_layout_json"), 400);
-                    return;
-                }
-                if (layout == null || !layout.isObject()) {
-                    writeJson(exchange, Map.of("error", "invalid_layout_model"), 400);
-                    return;
-                }
-                int count;
-                synchronized (CONTROL_ROOM_LAYOUTS_LOCK) {
-                    LinkedHashMap<String, JsonNode> profiles = ControlRoomLayoutStore.readProfiles(rootBaseDir);
-                    profiles.put(profile, layout);
-                    ControlRoomLayoutStore.writeProfiles(rootBaseDir, profiles);
-                    count = profiles.size();
-                }
-                writeJson(exchange, Map.of(
-                        "timestamp", Instant.now().toString(),
-                        "saved", profile,
-                        "count", count
-                ), 200);
-            });
-            server.createContext("/api/control-room/layouts/delete", exchange -> {
-                if (!allowMethods(exchange, "POST")) return;
-                if (!allowWriteRate(exchange, writeRateLimiter, runtime, "/api/control-room/layouts/delete")) return;
-                Map<String, String> q = parseParams(exchange);
-                AuthPrincipal principal = authorizePrincipal(exchange, q, auth, true);
-                if (principal == null) return;
-                String profile = ControlRoomLayoutStore.normalizeProfileName(q.get("name"));
-                if (profile.isEmpty()) {
-                    writeJson(exchange, Map.of("error", "invalid_profile_name"), 400);
-                    return;
-                }
-                boolean deleted;
-                int count;
-                synchronized (CONTROL_ROOM_LAYOUTS_LOCK) {
-                    LinkedHashMap<String, JsonNode> profiles = ControlRoomLayoutStore.readProfiles(rootBaseDir);
-                    deleted = profiles.remove(profile) != null;
-                    ControlRoomLayoutStore.writeProfiles(rootBaseDir, profiles);
-                    count = profiles.size();
-                }
-                writeJson(exchange, Map.of(
-                        "timestamp", Instant.now().toString(),
-                        "deleted", profile,
-                        "removed", deleted,
-                        "count", count
-                ), 200);
-            });
-            server.createContext("/events/control-room", exchange -> {
-                Map<String, String> q = parseParams(exchange);
-                AuthPrincipal principal = authorizePrincipal(exchange, q, auth, false);
-                if (principal == null) return;
-                int snapshotTaskLimit = clamp(parseIntOrDefault(q.get("taskLimit"), taskLimit), 1, 200);
-                int snapshotDeadLimit = clamp(parseIntOrDefault(q.get("deadLimit"), deadLimit), 1, 200);
-                int snapshotConflictLimit = clamp(parseIntOrDefault(q.get("conflictLimit"), 20), 1, 200);
-                int snapshotSinceHours = clamp(parseIntOrDefault(q.get("sinceHours"), 24), 1, 24 * 30);
-                int intervalMs = clamp(parseIntOrDefault(q.get("intervalMs"), 3000), 1000, 30000);
-                String statusFilter = q.get("status");
-                List<String> discovered = ControlRoomRuntimeSupport.discoverNamespaces(rootBaseDir, defaultNamespace);
-                List<String> requested = ControlRoomRuntimeSupport.resolveRequestedNamespaces(
-                        q.get("namespaces"),
-                        q.get("ns"),
-                        defaultNamespace,
-                        discovered
-                );
-                if (requested.isEmpty()) {
-                    requested = List.of(defaultNamespace);
-                }
-                for (String requestedNamespace : requested) {
-                    if (!discovered.contains(requestedNamespace)) {
-                        writeJson(
-                                exchange,
-                                Map.of("error", "namespace_not_found", "namespace", requestedNamespace),
-                                404
-                        );
-                        return;
-                    }
-                    if (!principalCanAccessNamespace(principal, requestedNamespace)) {
-                        writeJson(
-                                exchange,
-                                Map.of("error", "forbidden_namespace", "namespace", requestedNamespace),
-                                403
-                        );
-                        return;
-                    }
-                }
-                exchange.getResponseHeaders().set("Content-Type", "text/event-stream; charset=utf-8");
-                exchange.getResponseHeaders().set("Cache-Control", "no-cache");
-                exchange.getResponseHeaders().set("Connection", "keep-alive");
-                exchange.sendResponseHeaders(200, 0);
-                try (OutputStream os = exchange.getResponseBody()) {
-                    while (true) {
-                        LinkedHashMap<String, Object> payload = ControlRoomRuntimeSupport.buildSnapshotPayload(
-                                parent.root,
-                                defaultNamespace,
-                                namespaceRuntimeCache,
-                                requested,
-                                statusFilter,
-                                snapshotTaskLimit,
-                                snapshotDeadLimit,
-                                snapshotConflictLimit,
-                                snapshotSinceHours
-                        );
-                        String data = Jsons.toJson(payload).replace("\r", " ").replace("\n", " ");
-                        String frame = "event: control_snapshot\ndata: " + data + "\n\n";
-                        os.write(frame.getBytes(StandardCharsets.UTF_8));
-                        os.flush();
-                        Thread.sleep(intervalMs);
-                    }
-                } catch (Exception ignored) {
-                    // Client disconnected or stream interrupted.
-                }
-            });
+            registerControlRoomRoutes(
+                    server,
+                    parent,
+                    runtime,
+                    defaultNamespace,
+                    rootBaseDir,
+                    namespaceRuntimeCache,
+                    auth,
+                    writeRateLimiter,
+                    allowGetWrites,
+                    taskLimit,
+                    deadLimit
+            );
             server.createContext("/api/tasks", exchange -> {
                 Map<String, String> q = parseParams(exchange);
                 if (!authorize(exchange, q, auth, false)) return;
@@ -2987,6 +2499,523 @@ public final class RelayMeshCommand implements Runnable {
         }
         out.putAll(parseQueryString(body));
         return out;
+    }
+
+
+    private static void registerControlRoomRoutes(
+            HttpServer server,
+            RelayMeshCommand parent,
+            RelayMeshRuntime runtime,
+            String defaultNamespace,
+            Path rootBaseDir,
+            ConcurrentMap<String, RelayMeshRuntime> namespaceRuntimeCache,
+            WebAuth auth,
+            WriteRateLimiter writeRateLimiter,
+            boolean allowGetWrites,
+            int taskLimit,
+            int deadLimit
+    ) {
+            server.createContext("/control-room", exchange -> {
+                byte[] body = controlRoomHtml().getBytes(StandardCharsets.UTF_8);
+                exchange.getResponseHeaders().set("Content-Type", "text/html; charset=utf-8");
+                exchange.sendResponseHeaders(200, body.length);
+                try (OutputStream os = exchange.getResponseBody()) {
+                    os.write(body);
+                }
+            });
+            server.createContext("/api/namespaces", exchange -> {
+                Map<String, String> q = parseParams(exchange);
+                AuthPrincipal principal = authorizePrincipal(exchange, q, auth, false);
+                if (principal == null) return;
+                List<String> discovered = ControlRoomRuntimeSupport.discoverNamespaces(rootBaseDir, defaultNamespace);
+                List<String> visible = filterVisibleNamespaces(discovered, principal);
+                writeJson(exchange, Map.of(
+                        "activeNamespace", defaultNamespace,
+                        "namespaces", visible,
+                        "timestamp", Instant.now().toString()
+                ), 200);
+            });
+            server.createContext("/api/control-room/snapshot", exchange -> {
+                Map<String, String> q = parseParams(exchange);
+                AuthPrincipal principal = authorizePrincipal(exchange, q, auth, false);
+                if (principal == null) return;
+                int snapshotTaskLimit = clamp(parseIntOrDefault(q.get("taskLimit"), taskLimit), 1, 200);
+                int snapshotDeadLimit = clamp(parseIntOrDefault(q.get("deadLimit"), deadLimit), 1, 200);
+                int snapshotConflictLimit = clamp(parseIntOrDefault(q.get("conflictLimit"), 20), 1, 200);
+                int snapshotSinceHours = clamp(parseIntOrDefault(q.get("sinceHours"), 24), 1, 24 * 30);
+                String statusFilter = q.get("status");
+                List<String> discovered = ControlRoomRuntimeSupport.discoverNamespaces(rootBaseDir, defaultNamespace);
+                List<String> requested = ControlRoomRuntimeSupport.resolveRequestedNamespaces(
+                        q.get("namespaces"),
+                        q.get("ns"),
+                        defaultNamespace,
+                        discovered
+                );
+                if (requested.isEmpty()) {
+                    requested = List.of(defaultNamespace);
+                }
+                for (String requestedNamespace : requested) {
+                    if (!discovered.contains(requestedNamespace)) {
+                        writeJson(
+                                exchange,
+                                Map.of("error", "namespace_not_found", "namespace", requestedNamespace),
+                                404
+                        );
+                        return;
+                    }
+                    if (!principalCanAccessNamespace(principal, requestedNamespace)) {
+                        writeJson(
+                                exchange,
+                                Map.of("error", "forbidden_namespace", "namespace", requestedNamespace),
+                                403
+                        );
+                        return;
+                    }
+                }
+                LinkedHashMap<String, Object> payload = ControlRoomRuntimeSupport.buildSnapshotPayload(
+                        parent.root,
+                        defaultNamespace,
+                        namespaceRuntimeCache,
+                        requested,
+                        statusFilter,
+                        snapshotTaskLimit,
+                        snapshotDeadLimit,
+                        snapshotConflictLimit,
+                        snapshotSinceHours
+                );
+                writeJson(exchange, payload, 200);
+            });
+            server.createContext("/api/control-room/action", exchange -> {
+                if (!allowWriteMethod(exchange, allowGetWrites, runtime, "/api/control-room/action")) return;
+                if (!allowWriteRate(exchange, writeRateLimiter, runtime, "/api/control-room/action")) return;
+                Map<String, String> q = parseParams(exchange);
+                AuthPrincipal principal = authorizePrincipal(exchange, q, auth, true);
+                if (principal == null) return;
+                String action = q.get("action");
+                if (action == null || action.isBlank()) {
+                    writeJson(exchange, Map.of("error", "missing_action"), 400);
+                    return;
+                }
+                String requestedNamespace = ControlRoomRuntimeSupport.normalizeNamespace(q.get("namespace"), defaultNamespace);
+                List<String> discovered = ControlRoomRuntimeSupport.discoverNamespaces(rootBaseDir, defaultNamespace);
+                if (!discovered.contains(requestedNamespace)) {
+                    writeJson(
+                            exchange,
+                            Map.of("error", "namespace_not_found", "namespace", requestedNamespace),
+                            404
+                    );
+                    return;
+                }
+                if (!principalCanAccessNamespace(principal, requestedNamespace)) {
+                    writeJson(
+                            exchange,
+                            Map.of("error", "forbidden_namespace", "namespace", requestedNamespace),
+                            403
+                    );
+                    return;
+                }
+                RelayMeshRuntime scoped = ControlRoomRuntimeSupport.runtimeForNamespace(parent.root, requestedNamespace, namespaceRuntimeCache);
+                Map<String, Object> auditMeta = new LinkedHashMap<>(requestAuditMeta(exchange, "/api/control-room/action"));
+                auditMeta.put("namespace", requestedNamespace);
+                auditMeta.put("control_action", action);
+                LinkedHashMap<String, Object> response = new LinkedHashMap<>();
+                response.put("timestamp", Instant.now().toString());
+                response.put("namespace", requestedNamespace);
+                response.put("action", action);
+                switch (action.trim().toLowerCase(Locale.ROOT)) {
+                    case "cancel" -> {
+                        String taskId = q.get("taskId");
+                        if (taskId == null || taskId.isBlank()) {
+                            writeJson(exchange, Map.of("error", "missing_task_id"), 400);
+                            return;
+                        }
+                        String mode = q.get("mode");
+                        String reason = q.get("reason");
+                        Object result = scoped.cancelTaskViaWeb(
+                                taskId,
+                                reason,
+                                mode == null || mode.isBlank() ? "hard" : mode,
+                                auditMeta
+                        );
+                        response.put("result", result);
+                    }
+                    case "replay" -> {
+                        String taskId = q.get("taskId");
+                        if (taskId == null || taskId.isBlank()) {
+                            writeJson(exchange, Map.of("error", "missing_task_id"), 400);
+                            return;
+                        }
+                        Object result = scoped.replayDeadLetterViaWeb(taskId, auditMeta);
+                        response.put("result", result);
+                    }
+                    case "replay_batch" -> {
+                        String status = q.get("status");
+                        int limit = clamp(parseIntOrDefault(q.get("limit"), 100), 1, 500);
+                        Object result = scoped.replayDeadLetterBatchViaWeb(
+                                status == null || status.isBlank() ? "DEAD_LETTER" : status,
+                                limit,
+                                auditMeta
+                        );
+                        response.put("result", result);
+                    }
+                    default -> {
+                        writeJson(exchange, Map.of("error", "unsupported_action", "action", action), 400);
+                        return;
+                    }
+                }
+                writeJson(exchange, response, 200);
+            });
+            server.createContext("/api/control-room/workflow", exchange -> {
+                Map<String, String> q = parseParams(exchange);
+                AuthPrincipal principal = authorizePrincipal(exchange, q, auth, false);
+                if (principal == null) return;
+                String requestedNamespace = ControlRoomRuntimeSupport.normalizeNamespace(q.get("namespace"), defaultNamespace);
+                String taskId = q.get("taskId");
+                if (taskId == null || taskId.isBlank()) {
+                    writeJson(exchange, Map.of("error", "missing_task_id"), 400);
+                    return;
+                }
+                List<String> discovered = ControlRoomRuntimeSupport.discoverNamespaces(rootBaseDir, defaultNamespace);
+                if (!discovered.contains(requestedNamespace)) {
+                    writeJson(
+                            exchange,
+                            Map.of("error", "namespace_not_found", "namespace", requestedNamespace),
+                            404
+                    );
+                    return;
+                }
+                if (!principalCanAccessNamespace(principal, requestedNamespace)) {
+                    writeJson(
+                            exchange,
+                            Map.of("error", "forbidden_namespace", "namespace", requestedNamespace),
+                            403
+                    );
+                    return;
+                }
+                RelayMeshRuntime scoped = ControlRoomRuntimeSupport.runtimeForNamespace(parent.root, requestedNamespace, namespaceRuntimeCache);
+                var wf = scoped.workflow(taskId);
+                if (wf.isEmpty()) {
+                    writeJson(exchange, Map.of("error", "workflow_not_found", "taskId", taskId), 404);
+                    return;
+                }
+                LinkedHashMap<String, Object> payload = new LinkedHashMap<>();
+                payload.put("timestamp", Instant.now().toString());
+                payload.put("namespace", requestedNamespace);
+                payload.put("taskId", taskId);
+                payload.put("workflow", wf.get());
+                payload.put("edges", ControlRoomRuntimeSupport.buildWorkflowEdges(wf.get()));
+                writeJson(exchange, payload, 200);
+            });
+            server.createContext("/api/control-room/command", exchange -> {
+                if (!allowMethods(exchange, "POST")) return;
+                Map<String, String> q = parseParams(exchange);
+                String command = q.get("command");
+                if (command == null || command.isBlank()) {
+                    writeJson(exchange, Map.of("error", "missing_command"), 400);
+                    return;
+                }
+                List<String> tokens = ControlRoomCommandParser.parseTokens(command);
+                if (tokens.isEmpty()) {
+                    writeJson(exchange, Map.of("error", "empty_command"), 400);
+                    return;
+                }
+                String op = tokens.get(0).toLowerCase(Locale.ROOT);
+                boolean writeRequired = ControlRoomCommandParser.isWriteCommand(op);
+                if (writeRequired) {
+                    if (!allowWriteRate(exchange, writeRateLimiter, runtime, "/api/control-room/command")) return;
+                }
+                AuthPrincipal principal = authorizePrincipal(exchange, q, auth, writeRequired);
+                if (principal == null) return;
+                List<String> discovered = ControlRoomRuntimeSupport.discoverNamespaces(rootBaseDir, defaultNamespace);
+                LinkedHashMap<String, Object> response = new LinkedHashMap<>();
+                response.put("timestamp", Instant.now().toString());
+                response.put("command", command);
+                switch (op) {
+                    case "help" -> {
+                        response.put("result", Map.of(
+                                "commands", List.of(
+                                        "help",
+                                        "namespaces",
+                                        "stats <namespace>",
+                                        "members <namespace>",
+                                        "tasks <namespace> [status] [limit]",
+                                        "workflow <namespace> <taskId>",
+                                        "cancel <namespace> <taskId> [soft|hard] [reason...]",
+                                        "replay <namespace> <taskId>",
+                                        "replay-batch <namespace> [limit]"
+                                )
+                        ));
+                    }
+                    case "namespaces" -> {
+                        response.put("result", Map.of(
+                                "activeNamespace", defaultNamespace,
+                                "namespaces", filterVisibleNamespaces(discovered, principal)
+                        ));
+                    }
+                    case "stats", "members", "tasks", "workflow", "cancel", "replay", "replay-batch", "replay_batch" -> {
+                        if (tokens.size() < 2) {
+                            writeJson(exchange, Map.of("error", "missing_namespace", "command", op), 400);
+                            return;
+                        }
+                        String requestedNamespace = ControlRoomRuntimeSupport.normalizeNamespace(tokens.get(1), defaultNamespace);
+                        if (!discovered.contains(requestedNamespace)) {
+                            writeJson(
+                                    exchange,
+                                    Map.of("error", "namespace_not_found", "namespace", requestedNamespace),
+                                    404
+                            );
+                            return;
+                        }
+                        if (!principalCanAccessNamespace(principal, requestedNamespace)) {
+                            writeJson(
+                                    exchange,
+                                    Map.of("error", "forbidden_namespace", "namespace", requestedNamespace),
+                                    403
+                            );
+                            return;
+                        }
+                        RelayMeshRuntime scoped = ControlRoomRuntimeSupport.runtimeForNamespace(parent.root, requestedNamespace, namespaceRuntimeCache);
+                        response.put("namespace", requestedNamespace);
+                        switch (op) {
+                            case "stats" -> response.put("result", scoped.stats());
+                            case "members" -> response.put("result", scoped.members());
+                            case "tasks" -> {
+                                String status = tokens.size() >= 3 ? tokens.get(2) : "";
+                                if ("all".equalsIgnoreCase(status) || "-".equals(status)) {
+                                    status = "";
+                                }
+                                int limit = tokens.size() >= 4 ? clamp(parseIntOrDefault(tokens.get(3), 20), 1, 200) : 20;
+                                response.put("result", scoped.tasks(status, limit, 0));
+                            }
+                            case "workflow" -> {
+                                if (tokens.size() < 3) {
+                                    writeJson(exchange, Map.of("error", "missing_task_id", "command", op), 400);
+                                    return;
+                                }
+                                String taskId = tokens.get(2);
+                                var wf = scoped.workflow(taskId);
+                                if (wf.isEmpty()) {
+                                    writeJson(exchange, Map.of("error", "workflow_not_found", "taskId", taskId), 404);
+                                    return;
+                                }
+                                response.put("taskId", taskId);
+                                response.put("result", Map.of(
+                                        "workflow", wf.get(),
+                                        "edges", ControlRoomRuntimeSupport.buildWorkflowEdges(wf.get())
+                                ));
+                            }
+                            case "cancel" -> {
+                                if (tokens.size() < 3) {
+                                    writeJson(exchange, Map.of("error", "missing_task_id", "command", op), 400);
+                                    return;
+                                }
+                                String taskId = tokens.get(2);
+                                String mode = tokens.size() >= 4 ? tokens.get(3) : "hard";
+                                String reason = ControlRoomCommandParser.joinTail(tokens, 4);
+                                Map<String, Object> audit = new LinkedHashMap<>(requestAuditMeta(exchange, "/api/control-room/command"));
+                                audit.put("namespace", requestedNamespace);
+                                audit.put("control_command", command);
+                                Object result = scoped.cancelTaskViaWeb(taskId, reason, mode, audit);
+                                response.put("taskId", taskId);
+                                response.put("mode", mode);
+                                response.put("result", result);
+                            }
+                            case "replay" -> {
+                                if (tokens.size() < 3) {
+                                    writeJson(exchange, Map.of("error", "missing_task_id", "command", op), 400);
+                                    return;
+                                }
+                                String taskId = tokens.get(2);
+                                Map<String, Object> audit = new LinkedHashMap<>(requestAuditMeta(exchange, "/api/control-room/command"));
+                                audit.put("namespace", requestedNamespace);
+                                audit.put("control_command", command);
+                                Object result = scoped.replayDeadLetterViaWeb(taskId, audit);
+                                response.put("taskId", taskId);
+                                response.put("result", result);
+                            }
+                            case "replay-batch", "replay_batch" -> {
+                                int limit = tokens.size() >= 3 ? clamp(parseIntOrDefault(tokens.get(2), 50), 1, 500) : 50;
+                                Map<String, Object> audit = new LinkedHashMap<>(requestAuditMeta(exchange, "/api/control-room/command"));
+                                audit.put("namespace", requestedNamespace);
+                                audit.put("control_command", command);
+                                Object result = scoped.replayDeadLetterBatchViaWeb("DEAD_LETTER", limit, audit);
+                                response.put("limit", limit);
+                                response.put("result", result);
+                            }
+                            default -> {
+                                writeJson(exchange, Map.of("error", "unsupported_command", "command", op), 400);
+                                return;
+                            }
+                        }
+                    }
+                    default -> {
+                        writeJson(exchange, Map.of("error", "unsupported_command", "command", op), 400);
+                        return;
+                    }
+                }
+                writeJson(exchange, response, 200);
+            });
+            server.createContext("/api/control-room/layouts", exchange -> {
+                Map<String, String> q = parseParams(exchange);
+                AuthPrincipal principal = authorizePrincipal(exchange, q, auth, false);
+                if (principal == null) return;
+                String profile = ControlRoomLayoutStore.normalizeProfileName(q.get("name"));
+                LinkedHashMap<String, JsonNode> profiles;
+                synchronized (CONTROL_ROOM_LAYOUTS_LOCK) {
+                    profiles = ControlRoomLayoutStore.readProfiles(rootBaseDir);
+                }
+                if (!profile.isEmpty()) {
+                    JsonNode layout = profiles.get(profile);
+                    if (layout == null) {
+                        writeJson(exchange, Map.of("error", "profile_not_found", "name", profile), 404);
+                        return;
+                    }
+                    writeJson(exchange, Map.of(
+                            "timestamp", Instant.now().toString(),
+                            "name", profile,
+                            "layout", layout
+                    ), 200);
+                    return;
+                }
+                List<String> names = new ArrayList<>(profiles.keySet());
+                names.sort(String::compareTo);
+                writeJson(exchange, Map.of(
+                        "timestamp", Instant.now().toString(),
+                        "profiles", names,
+                        "count", names.size()
+                ), 200);
+            });
+            server.createContext("/api/control-room/layouts/save", exchange -> {
+                if (!allowMethods(exchange, "POST")) return;
+                if (!allowWriteRate(exchange, writeRateLimiter, runtime, "/api/control-room/layouts/save")) return;
+                Map<String, String> q = parseParams(exchange);
+                AuthPrincipal principal = authorizePrincipal(exchange, q, auth, true);
+                if (principal == null) return;
+                String profile = ControlRoomLayoutStore.normalizeProfileName(q.get("name"));
+                if (profile.isEmpty()) {
+                    writeJson(exchange, Map.of("error", "invalid_profile_name"), 400);
+                    return;
+                }
+                String layoutRaw = q.get("layout");
+                if (layoutRaw == null || layoutRaw.isBlank()) {
+                    writeJson(exchange, Map.of("error", "missing_layout"), 400);
+                    return;
+                }
+                JsonNode layout;
+                try {
+                    layout = Jsons.mapper().readTree(layoutRaw);
+                } catch (Exception e) {
+                    writeJson(exchange, Map.of("error", "invalid_layout_json"), 400);
+                    return;
+                }
+                if (layout == null || !layout.isObject()) {
+                    writeJson(exchange, Map.of("error", "invalid_layout_model"), 400);
+                    return;
+                }
+                int count;
+                synchronized (CONTROL_ROOM_LAYOUTS_LOCK) {
+                    LinkedHashMap<String, JsonNode> profiles = ControlRoomLayoutStore.readProfiles(rootBaseDir);
+                    profiles.put(profile, layout);
+                    ControlRoomLayoutStore.writeProfiles(rootBaseDir, profiles);
+                    count = profiles.size();
+                }
+                writeJson(exchange, Map.of(
+                        "timestamp", Instant.now().toString(),
+                        "saved", profile,
+                        "count", count
+                ), 200);
+            });
+            server.createContext("/api/control-room/layouts/delete", exchange -> {
+                if (!allowMethods(exchange, "POST")) return;
+                if (!allowWriteRate(exchange, writeRateLimiter, runtime, "/api/control-room/layouts/delete")) return;
+                Map<String, String> q = parseParams(exchange);
+                AuthPrincipal principal = authorizePrincipal(exchange, q, auth, true);
+                if (principal == null) return;
+                String profile = ControlRoomLayoutStore.normalizeProfileName(q.get("name"));
+                if (profile.isEmpty()) {
+                    writeJson(exchange, Map.of("error", "invalid_profile_name"), 400);
+                    return;
+                }
+                boolean deleted;
+                int count;
+                synchronized (CONTROL_ROOM_LAYOUTS_LOCK) {
+                    LinkedHashMap<String, JsonNode> profiles = ControlRoomLayoutStore.readProfiles(rootBaseDir);
+                    deleted = profiles.remove(profile) != null;
+                    ControlRoomLayoutStore.writeProfiles(rootBaseDir, profiles);
+                    count = profiles.size();
+                }
+                writeJson(exchange, Map.of(
+                        "timestamp", Instant.now().toString(),
+                        "deleted", profile,
+                        "removed", deleted,
+                        "count", count
+                ), 200);
+            });
+            server.createContext("/events/control-room", exchange -> {
+                Map<String, String> q = parseParams(exchange);
+                AuthPrincipal principal = authorizePrincipal(exchange, q, auth, false);
+                if (principal == null) return;
+                int snapshotTaskLimit = clamp(parseIntOrDefault(q.get("taskLimit"), taskLimit), 1, 200);
+                int snapshotDeadLimit = clamp(parseIntOrDefault(q.get("deadLimit"), deadLimit), 1, 200);
+                int snapshotConflictLimit = clamp(parseIntOrDefault(q.get("conflictLimit"), 20), 1, 200);
+                int snapshotSinceHours = clamp(parseIntOrDefault(q.get("sinceHours"), 24), 1, 24 * 30);
+                int intervalMs = clamp(parseIntOrDefault(q.get("intervalMs"), 3000), 1000, 30000);
+                String statusFilter = q.get("status");
+                List<String> discovered = ControlRoomRuntimeSupport.discoverNamespaces(rootBaseDir, defaultNamespace);
+                List<String> requested = ControlRoomRuntimeSupport.resolveRequestedNamespaces(
+                        q.get("namespaces"),
+                        q.get("ns"),
+                        defaultNamespace,
+                        discovered
+                );
+                if (requested.isEmpty()) {
+                    requested = List.of(defaultNamespace);
+                }
+                for (String requestedNamespace : requested) {
+                    if (!discovered.contains(requestedNamespace)) {
+                        writeJson(
+                                exchange,
+                                Map.of("error", "namespace_not_found", "namespace", requestedNamespace),
+                                404
+                        );
+                        return;
+                    }
+                    if (!principalCanAccessNamespace(principal, requestedNamespace)) {
+                        writeJson(
+                                exchange,
+                                Map.of("error", "forbidden_namespace", "namespace", requestedNamespace),
+                                403
+                        );
+                        return;
+                    }
+                }
+                exchange.getResponseHeaders().set("Content-Type", "text/event-stream; charset=utf-8");
+                exchange.getResponseHeaders().set("Cache-Control", "no-cache");
+                exchange.getResponseHeaders().set("Connection", "keep-alive");
+                exchange.sendResponseHeaders(200, 0);
+                try (OutputStream os = exchange.getResponseBody()) {
+                    while (true) {
+                        LinkedHashMap<String, Object> payload = ControlRoomRuntimeSupport.buildSnapshotPayload(
+                                parent.root,
+                                defaultNamespace,
+                                namespaceRuntimeCache,
+                                requested,
+                                statusFilter,
+                                snapshotTaskLimit,
+                                snapshotDeadLimit,
+                                snapshotConflictLimit,
+                                snapshotSinceHours
+                        );
+                        String data = Jsons.toJson(payload).replace("\r", " ").replace("\n", " ");
+                        String frame = "event: control_snapshot\ndata: " + data + "\n\n";
+                        os.write(frame.getBytes(StandardCharsets.UTF_8));
+                        os.flush();
+                        Thread.sleep(intervalMs);
+                    }
+                } catch (Exception ignored) {
+                    // Client disconnected or stream interrupted.
+                }
+            });
     }
 
     private static int parseIntOrDefault(String raw, int fallback) {

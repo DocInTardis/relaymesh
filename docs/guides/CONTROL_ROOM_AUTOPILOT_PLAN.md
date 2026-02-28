@@ -186,6 +186,20 @@ Acceptance:
 - control-room auth boundaries are validated through script assertions
 - operators can run one command to verify core control-room APIs
 
+## 3.12 Phase L - Route Registration Modularization
+
+Delivered:
+
+- extracted control-room route setup from `ServeWebCommand.call()` into `registerControlRoomRoutes(...)`
+- kept route handlers and auth/write-limit checks unchanged
+- re-validated with compile, full test suite, and control-room API smoke script
+
+Acceptance:
+
+- serve-web main flow is shorter and easier to reason about
+- control-room registration is isolated for future class-level extraction
+- no behavioral regression observed in automated validation runs
+
 ## 4. Next Iteration Backlog
 
 Planned for future autopilot rounds:
