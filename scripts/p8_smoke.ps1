@@ -1,6 +1,7 @@
-﻿param(
+param(
     [string]$Root = "tmp/p8-smoke",
-    [int]$Port = 18888
+    [int]$Port = 18888,
+    [int]$WebReadyTimeoutSec = 60
 )
 
 Set-StrictMode -Version Latest
@@ -49,7 +50,7 @@ try {
     function Wait-WebReady {
         param(
             [int]$ReadyPort,
-            [int]$TimeoutSec = 20
+            [int]$TimeoutSec = 60
         )
         $deadline = (Get-Date).AddSeconds($TimeoutSec)
         while ((Get-Date) -lt $deadline) {
@@ -67,6 +68,36 @@ try {
         throw "web server not ready on port $ReadyPort"
     }
 
+    function Test-PortInUse {
+        param([int]$CheckPort)
+        $listener = $null
+        try {
+            $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $CheckPort)
+            $listener.Start()
+            return $false
+        } catch {
+            return $true
+        } finally {
+            if ($null -ne $listener) {
+                try { $listener.Stop() } catch { }
+            }
+        }
+    }
+
+    function Find-FreePortPair {
+        param([int]$PreferredBasePort)
+        $candidate = if ($PreferredBasePort -lt 1024) { 1024 } else { $PreferredBasePort }
+        if (-not (Test-PortInUse -CheckPort $candidate) -and -not (Test-PortInUse -CheckPort ($candidate + 1))) {
+            return $candidate
+        }
+        for ($p = 20000; $p -le 60000; $p++) {
+            if (-not (Test-PortInUse -CheckPort $p) -and -not (Test-PortInUse -CheckPort ($p + 1))) {
+                return $p
+            }
+        }
+        throw "unable to find available adjacent ports for smoke web checks"
+    }
+
     function Start-WebJob {
         param(
             [string]$ExecArgs,
@@ -77,7 +108,7 @@ try {
             Set-Location $ProjectRootArg
             & mvn -q exec:java "-Dexec.args=$ExecArgsArg"
         } -ArgumentList $ProjectRoot, $ExecArgs
-        Wait-WebReady -ReadyPort $ReadyPort
+        Wait-WebReady -ReadyPort $ReadyPort -TimeoutSec $WebReadyTimeoutSec
         return $job
     }
 
@@ -162,8 +193,9 @@ try {
 
     $roToken = "relay_ro_smoke"
     $rwToken = "relay_rw_smoke"
-    $postPort = $Port
-    $compatPort = $Port + 1
+    $postPort = Find-FreePortPair -PreferredBasePort $Port
+    $compatPort = $postPort + 1
+    Write-Host ("[smoke] using ports post-only={0}, allow-get={1}" -f $postPort, $compatPort)
     $summary = [ordered]@{}
 
     $server = $null

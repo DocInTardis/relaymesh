@@ -44,7 +44,7 @@ jobs:
 
       - name: P8 Smoke
         shell: powershell
-        run: powershell -ExecutionPolicy Bypass -File scripts/p8_smoke.ps1 -Root tmp/ci-p8-smoke -Port 18980
+        run: powershell -ExecutionPolicy Bypass -File scripts/p8_smoke.ps1 -Root tmp/ci-p8-smoke -Port 18980 -WebReadyTimeoutSec 90
 
       - name: V2 Mesh Smoke
         shell: powershell
