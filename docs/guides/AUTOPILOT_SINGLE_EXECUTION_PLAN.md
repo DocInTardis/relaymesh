@@ -61,6 +61,7 @@ After one-click startup, operators can:
 - 2026-02-28: re-validated with compile + full test + control-room API smoke script.
 - 2026-02-28: committed and pushed Phase L as `0cb17c7` to `origin/main`.
 - 2026-02-28: added studio launcher scripts (`start_studio.ps1`, `install_studio_shortcut.ps1`) and verified with dry-run and shortcut generation test.
+- 2026-02-28: committed and pushed Phase M as `570f94a` to `origin/main`.
 
 ## 6. Current Execution Batch (Phase K)
 
@@ -103,7 +104,7 @@ After one-click startup, operators can:
 - [x] M3: Validate launcher script in non-interactive smoke mode.
 - [x] M4: Validate shortcut installer with temp `.lnk` output.
 - [x] M5: Update user docs and quickstart for launcher flow.
-- [ ] M6: Commit and push to `origin/main`.
+- [x] M6: Commit and push to `origin/main`.
 
 ### 8.2 Acceptance
 
