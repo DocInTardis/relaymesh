@@ -154,6 +154,21 @@ Acceptance:
 - control-room APIs and UI entry still compile and run through existing tests
 - control-room support logic is independently testable in dedicated classes
 
+## 3.10 Phase J - Maintainability Refactor Round 2
+
+Delivered:
+
+- extracted namespace/runtime snapshot helpers to `ControlRoomRuntimeSupport`
+- migrated control-room route handlers to call `ControlRoomRuntimeSupport` methods
+- removed duplicated namespace/snapshot/workflow edge helper code from `RelayMeshCommand`
+- added dedicated tests for namespace resolution/discovery, workflow edge generation, and snapshot payload shape
+
+Acceptance:
+
+- `RelayMeshCommand.java` complexity reduced further while preserving API behavior
+- compile and test suite pass after helper migration
+- control-room runtime support logic is reusable and directly testable
+
 ## 4. Next Iteration Backlog
 
 Planned for future autopilot rounds:

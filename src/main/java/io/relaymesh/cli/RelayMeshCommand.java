@@ -1140,7 +1140,7 @@ public final class RelayMeshCommand implements Runnable {
                 Map<String, String> q = parseParams(exchange);
                 AuthPrincipal principal = authorizePrincipal(exchange, q, auth, false);
                 if (principal == null) return;
-                List<String> discovered = discoverNamespaces(rootBaseDir, defaultNamespace);
+                List<String> discovered = ControlRoomRuntimeSupport.discoverNamespaces(rootBaseDir, defaultNamespace);
                 List<String> visible = filterVisibleNamespaces(discovered, principal);
                 writeJson(exchange, Map.of(
                         "activeNamespace", defaultNamespace,
@@ -1157,8 +1157,8 @@ public final class RelayMeshCommand implements Runnable {
                 int snapshotConflictLimit = clamp(parseIntOrDefault(q.get("conflictLimit"), 20), 1, 200);
                 int snapshotSinceHours = clamp(parseIntOrDefault(q.get("sinceHours"), 24), 1, 24 * 30);
                 String statusFilter = q.get("status");
-                List<String> discovered = discoverNamespaces(rootBaseDir, defaultNamespace);
-                List<String> requested = resolveRequestedNamespaces(
+                List<String> discovered = ControlRoomRuntimeSupport.discoverNamespaces(rootBaseDir, defaultNamespace);
+                List<String> requested = ControlRoomRuntimeSupport.resolveRequestedNamespaces(
                         q.get("namespaces"),
                         q.get("ns"),
                         defaultNamespace,
@@ -1185,7 +1185,7 @@ public final class RelayMeshCommand implements Runnable {
                         return;
                     }
                 }
-                LinkedHashMap<String, Object> payload = buildControlRoomSnapshotPayload(
+                LinkedHashMap<String, Object> payload = ControlRoomRuntimeSupport.buildSnapshotPayload(
                         parent.root,
                         defaultNamespace,
                         namespaceRuntimeCache,
@@ -1209,8 +1209,8 @@ public final class RelayMeshCommand implements Runnable {
                     writeJson(exchange, Map.of("error", "missing_action"), 400);
                     return;
                 }
-                String requestedNamespace = normalizeNamespace(q.get("namespace"), defaultNamespace);
-                List<String> discovered = discoverNamespaces(rootBaseDir, defaultNamespace);
+                String requestedNamespace = ControlRoomRuntimeSupport.normalizeNamespace(q.get("namespace"), defaultNamespace);
+                List<String> discovered = ControlRoomRuntimeSupport.discoverNamespaces(rootBaseDir, defaultNamespace);
                 if (!discovered.contains(requestedNamespace)) {
                     writeJson(
                             exchange,
@@ -1227,7 +1227,7 @@ public final class RelayMeshCommand implements Runnable {
                     );
                     return;
                 }
-                RelayMeshRuntime scoped = runtimeForNamespace(parent.root, requestedNamespace, namespaceRuntimeCache);
+                RelayMeshRuntime scoped = ControlRoomRuntimeSupport.runtimeForNamespace(parent.root, requestedNamespace, namespaceRuntimeCache);
                 Map<String, Object> auditMeta = new LinkedHashMap<>(requestAuditMeta(exchange, "/api/control-room/action"));
                 auditMeta.put("namespace", requestedNamespace);
                 auditMeta.put("control_action", action);
@@ -1282,13 +1282,13 @@ public final class RelayMeshCommand implements Runnable {
                 Map<String, String> q = parseParams(exchange);
                 AuthPrincipal principal = authorizePrincipal(exchange, q, auth, false);
                 if (principal == null) return;
-                String requestedNamespace = normalizeNamespace(q.get("namespace"), defaultNamespace);
+                String requestedNamespace = ControlRoomRuntimeSupport.normalizeNamespace(q.get("namespace"), defaultNamespace);
                 String taskId = q.get("taskId");
                 if (taskId == null || taskId.isBlank()) {
                     writeJson(exchange, Map.of("error", "missing_task_id"), 400);
                     return;
                 }
-                List<String> discovered = discoverNamespaces(rootBaseDir, defaultNamespace);
+                List<String> discovered = ControlRoomRuntimeSupport.discoverNamespaces(rootBaseDir, defaultNamespace);
                 if (!discovered.contains(requestedNamespace)) {
                     writeJson(
                             exchange,
@@ -1305,7 +1305,7 @@ public final class RelayMeshCommand implements Runnable {
                     );
                     return;
                 }
-                RelayMeshRuntime scoped = runtimeForNamespace(parent.root, requestedNamespace, namespaceRuntimeCache);
+                RelayMeshRuntime scoped = ControlRoomRuntimeSupport.runtimeForNamespace(parent.root, requestedNamespace, namespaceRuntimeCache);
                 var wf = scoped.workflow(taskId);
                 if (wf.isEmpty()) {
                     writeJson(exchange, Map.of("error", "workflow_not_found", "taskId", taskId), 404);
@@ -1316,7 +1316,7 @@ public final class RelayMeshCommand implements Runnable {
                 payload.put("namespace", requestedNamespace);
                 payload.put("taskId", taskId);
                 payload.put("workflow", wf.get());
-                payload.put("edges", buildWorkflowEdges(wf.get()));
+                payload.put("edges", ControlRoomRuntimeSupport.buildWorkflowEdges(wf.get()));
                 writeJson(exchange, payload, 200);
             });
             server.createContext("/api/control-room/command", exchange -> {
@@ -1339,7 +1339,7 @@ public final class RelayMeshCommand implements Runnable {
                 }
                 AuthPrincipal principal = authorizePrincipal(exchange, q, auth, writeRequired);
                 if (principal == null) return;
-                List<String> discovered = discoverNamespaces(rootBaseDir, defaultNamespace);
+                List<String> discovered = ControlRoomRuntimeSupport.discoverNamespaces(rootBaseDir, defaultNamespace);
                 LinkedHashMap<String, Object> response = new LinkedHashMap<>();
                 response.put("timestamp", Instant.now().toString());
                 response.put("command", command);
@@ -1370,7 +1370,7 @@ public final class RelayMeshCommand implements Runnable {
                             writeJson(exchange, Map.of("error", "missing_namespace", "command", op), 400);
                             return;
                         }
-                        String requestedNamespace = normalizeNamespace(tokens.get(1), defaultNamespace);
+                        String requestedNamespace = ControlRoomRuntimeSupport.normalizeNamespace(tokens.get(1), defaultNamespace);
                         if (!discovered.contains(requestedNamespace)) {
                             writeJson(
                                     exchange,
@@ -1387,7 +1387,7 @@ public final class RelayMeshCommand implements Runnable {
                             );
                             return;
                         }
-                        RelayMeshRuntime scoped = runtimeForNamespace(parent.root, requestedNamespace, namespaceRuntimeCache);
+                        RelayMeshRuntime scoped = ControlRoomRuntimeSupport.runtimeForNamespace(parent.root, requestedNamespace, namespaceRuntimeCache);
                         response.put("namespace", requestedNamespace);
                         switch (op) {
                             case "stats" -> response.put("result", scoped.stats());
@@ -1414,7 +1414,7 @@ public final class RelayMeshCommand implements Runnable {
                                 response.put("taskId", taskId);
                                 response.put("result", Map.of(
                                         "workflow", wf.get(),
-                                        "edges", buildWorkflowEdges(wf.get())
+                                        "edges", ControlRoomRuntimeSupport.buildWorkflowEdges(wf.get())
                                 ));
                             }
                             case "cancel" -> {
@@ -1574,8 +1574,8 @@ public final class RelayMeshCommand implements Runnable {
                 int snapshotSinceHours = clamp(parseIntOrDefault(q.get("sinceHours"), 24), 1, 24 * 30);
                 int intervalMs = clamp(parseIntOrDefault(q.get("intervalMs"), 3000), 1000, 30000);
                 String statusFilter = q.get("status");
-                List<String> discovered = discoverNamespaces(rootBaseDir, defaultNamespace);
-                List<String> requested = resolveRequestedNamespaces(
+                List<String> discovered = ControlRoomRuntimeSupport.discoverNamespaces(rootBaseDir, defaultNamespace);
+                List<String> requested = ControlRoomRuntimeSupport.resolveRequestedNamespaces(
                         q.get("namespaces"),
                         q.get("ns"),
                         defaultNamespace,
@@ -1608,7 +1608,7 @@ public final class RelayMeshCommand implements Runnable {
                 exchange.sendResponseHeaders(200, 0);
                 try (OutputStream os = exchange.getResponseBody()) {
                     while (true) {
-                        LinkedHashMap<String, Object> payload = buildControlRoomSnapshotPayload(
+                        LinkedHashMap<String, Object> payload = ControlRoomRuntimeSupport.buildSnapshotPayload(
                                 parent.root,
                                 defaultNamespace,
                                 namespaceRuntimeCache,
@@ -3010,103 +3010,6 @@ public final class RelayMeshCommand implements Runnable {
         return value;
     }
 
-    private static RelayMeshRuntime runtimeForNamespace(
-            String root,
-            String namespace,
-            ConcurrentMap<String, RelayMeshRuntime> cache
-    ) {
-        String normalized = normalizeNamespace(namespace, RelayMeshConfig.DEFAULT_NAMESPACE);
-        return cache.computeIfAbsent(normalized, ns -> {
-            RelayMeshRuntime scoped = new RelayMeshRuntime(RelayMeshConfig.fromRoot(root, ns));
-            scoped.init();
-            return scoped;
-        });
-    }
-
-    private static List<String> discoverNamespaces(Path rootBaseDir, String activeNamespace) {
-        LinkedHashSet<String> out = new LinkedHashSet<>();
-        String normalizedActive = normalizeNamespace(activeNamespace, RelayMeshConfig.DEFAULT_NAMESPACE);
-        if (Files.exists(rootBaseDir.resolve("relaymesh.db"))) {
-            out.add(RelayMeshConfig.DEFAULT_NAMESPACE);
-        }
-        Path namespacesRoot = rootBaseDir.resolve(RelayMeshConfig.DEFAULT_NAMESPACES_DIR);
-        if (Files.isDirectory(namespacesRoot)) {
-            try (var children = Files.newDirectoryStream(namespacesRoot)) {
-                for (Path child : children) {
-                    if (!Files.isDirectory(child)) {
-                        continue;
-                    }
-                    if (!Files.exists(child.resolve("relaymesh.db"))) {
-                        continue;
-                    }
-                    out.add(normalizeNamespace(child.getFileName().toString(), normalizedActive));
-                }
-            } catch (IOException ignored) {
-                // Keep best-effort discovery for control-room.
-            }
-        }
-        out.add(normalizedActive);
-        List<String> namespaces = new ArrayList<>(out);
-        namespaces.sort(String::compareTo);
-        if (namespaces.remove(normalizedActive)) {
-            namespaces.add(0, normalizedActive);
-        }
-        return namespaces;
-    }
-
-    private static List<String> resolveRequestedNamespaces(
-            String rawNamespaces,
-            String singleNamespace,
-            String activeNamespace,
-            List<String> discovered
-    ) {
-        String value = rawNamespaces == null || rawNamespaces.isBlank() ? singleNamespace : rawNamespaces;
-        if (value == null || value.isBlank()) {
-            return List.of(normalizeNamespace(activeNamespace, RelayMeshConfig.DEFAULT_NAMESPACE));
-        }
-        LinkedHashSet<String> out = new LinkedHashSet<>();
-        for (String token : parseNamespaceList(value)) {
-            if ("all".equalsIgnoreCase(token)) {
-                if (discovered != null) {
-                    for (String ns : discovered) {
-                        out.add(normalizeNamespace(ns, activeNamespace));
-                    }
-                }
-                continue;
-            }
-            out.add(normalizeNamespace(token, activeNamespace));
-        }
-        if (out.isEmpty()) {
-            out.add(normalizeNamespace(activeNamespace, RelayMeshConfig.DEFAULT_NAMESPACE));
-        }
-        return new ArrayList<>(out);
-    }
-
-    private static List<String> parseNamespaceList(String raw) {
-        List<String> out = new ArrayList<>();
-        if (raw == null || raw.isBlank()) {
-            return out;
-        }
-        for (String token : raw.split(",")) {
-            if (token == null) {
-                continue;
-            }
-            String trimmed = token.trim();
-            if (!trimmed.isEmpty()) {
-                out.add(trimmed);
-            }
-        }
-        return out;
-    }
-
-    private static String normalizeNamespace(String raw, String fallback) {
-        String candidate = raw == null || raw.isBlank() ? fallback : raw.trim();
-        if (candidate == null || candidate.isBlank()) {
-            candidate = RelayMeshConfig.DEFAULT_NAMESPACE;
-        }
-        return RelayMeshConfig.fromRoot("data", candidate).namespace();
-    }
-
     private static List<String> filterVisibleNamespaces(List<String> discovered, AuthPrincipal principal) {
         if (principal == null) {
             return List.of();
@@ -3130,73 +3033,8 @@ public final class RelayMeshCommand implements Runnable {
         if (principal.allowedNamespaces() == null || principal.allowedNamespaces().isEmpty()) {
             return true;
         }
-        String normalized = normalizeNamespace(namespace, principal.namespace());
+        String normalized = ControlRoomRuntimeSupport.normalizeNamespace(namespace, principal.namespace());
         return principal.allowedNamespaces().contains(normalized);
-    }
-
-    private static LinkedHashMap<String, Object> buildControlRoomSnapshotPayload(
-            String root,
-            String defaultNamespace,
-            ConcurrentMap<String, RelayMeshRuntime> runtimeCache,
-            List<String> requestedNamespaces,
-            String statusFilter,
-            int taskLimit,
-            int deadLimit,
-            int conflictLimit,
-            int sinceHours
-    ) {
-        LinkedHashMap<String, Object> data = new LinkedHashMap<>();
-        for (String ns : requestedNamespaces) {
-            RelayMeshRuntime scoped = runtimeForNamespace(root, ns, runtimeCache);
-            LinkedHashMap<String, Object> snap = new LinkedHashMap<>();
-            snap.put("stats", scoped.stats());
-            snap.put("members", scoped.members());
-            snap.put("tasks", scoped.tasks(statusFilter, taskLimit, 0));
-            snap.put("dead", scoped.tasks("DEAD_LETTER", deadLimit, 0));
-            snap.put("conflicts", scoped.leaseConflicts(conflictLimit, sinceHours));
-            data.put(ns, snap);
-        }
-        LinkedHashMap<String, Object> payload = new LinkedHashMap<>();
-        payload.put("timestamp", Instant.now().toString());
-        payload.put("activeNamespace", defaultNamespace);
-        payload.put("requestedNamespaces", requestedNamespaces);
-        payload.put("statusFilter", statusFilter == null ? "" : statusFilter);
-        payload.put("data", data);
-        return payload;
-    }
-
-    private static List<String> buildWorkflowEdges(Object workflowPayload) {
-        List<String> edges = new ArrayList<>();
-        if (workflowPayload == null) {
-            return edges;
-        }
-        JsonNode root = Jsons.mapper().valueToTree(workflowPayload);
-        JsonNode steps = root.path("steps");
-        if (!steps.isArray()) {
-            return edges;
-        }
-        for (JsonNode step : steps) {
-            String stepId = step.path("stepId").asText();
-            if (stepId == null || stepId.isBlank()) {
-                stepId = step.path("id").asText();
-            }
-            if (stepId == null || stepId.isBlank()) {
-                continue;
-            }
-            JsonNode dependsOn = step.path("dependsOn");
-            if (!dependsOn.isArray() || dependsOn.isEmpty()) {
-                edges.add("[ROOT] -> " + stepId);
-                continue;
-            }
-            for (JsonNode dep : dependsOn) {
-                String depId = dep.asText();
-                if (depId == null || depId.isBlank()) {
-                    continue;
-                }
-                edges.add(depId + " -> " + stepId);
-            }
-        }
-        return edges;
     }
 
     private static List<String> resolveSeedEndpoints(List<String> cliSeeds, String seedsFile) {

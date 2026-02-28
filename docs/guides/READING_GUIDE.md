@@ -59,6 +59,7 @@ Reason: CLI methods are a thin map of capabilities exposed by `RelayMeshRuntime`
 4. Read control-room support modules:
    - `src/main/java/io/relaymesh/cli/ControlRoomCommandParser.java`
    - `src/main/java/io/relaymesh/cli/ControlRoomLayoutStore.java`
+   - `src/main/java/io/relaymesh/cli/ControlRoomRuntimeSupport.java`
 5. Map each view type back to runtime calls:
    - tasks/dead -> `runtime.tasks(...)`
    - conflicts -> `runtime.leaseConflicts(...)`
